@@ -36,8 +36,551 @@
 ## 初始配置 
 
 ### init
+在执行任何Python代码之前，首先要建立基础的配置。运行时的配置是在`Include/cpython/initconfig.h`中定义的数据结构PyConfig，其结构如下：
+```
+typedef struct {
+    int _config_version;  /* Internal configuration version,
+                             used for ABI compatibility */
+    int _config_init;     /* _PyConfigInitEnum value */
 
-1. Python/initconfig.c中 `config_read_env_vars` 函数读取环境变量。
+    int isolated;         /* Isolated mode? see PyPreConfig.isolated */
+    int use_environment;  /* Use environment variables? see PyPreConfig.use_environment */
+    int dev_mode;         /* Development mode? See PyPreConfig.dev_mode */
+
+    /* Install signal handlers? Yes by default. */
+    int install_signal_handlers;
+
+    int use_hash_seed;      /* PYTHONHASHSEED=x */
+    unsigned long hash_seed;
+
+    /* Enable faulthandler?
+       Set to 1 by -X faulthandler and PYTHONFAULTHANDLER. -1 means unset. */
+    int faulthandler;
+
+    /* Enable tracemalloc?
+       Set by -X tracemalloc=N and PYTHONTRACEMALLOC. -1 means unset */
+    int tracemalloc;
+
+    int import_time;        /* PYTHONPROFILEIMPORTTIME, -X importtime */
+    int show_ref_count;     /* -X showrefcount */
+    int show_alloc_count;   /* -X showalloccount */
+    int dump_refs;          /* PYTHONDUMPREFS */
+    int malloc_stats;       /* PYTHONMALLOCSTATS */
+
+    /* Python filesystem encoding and error handler:
+       sys.getfilesystemencoding() and sys.getfilesystemencodeerrors().
+
+       Default encoding and error handler:
+
+       * if Py_SetStandardStreamEncoding() has been called: they have the
+         highest priority;
+       * PYTHONIOENCODING environment variable;
+       * The UTF-8 Mode uses UTF-8/surrogateescape;
+       * If Python forces the usage of the ASCII encoding (ex: C locale
+         or POSIX locale on FreeBSD or HP-UX), use ASCII/surrogateescape;
+       * locale encoding: ANSI code page on Windows, UTF-8 on Android and
+         VxWorks, LC_CTYPE locale encoding on other platforms;
+       * On Windows, "surrogateescape" error handler;
+       * "surrogateescape" error handler if the LC_CTYPE locale is "C" or "POSIX";
+       * "surrogateescape" error handler if the LC_CTYPE locale has been coerced
+         (PEP 538);
+       * "strict" error handler.
+
+       Supported error handlers: "strict", "surrogateescape" and
+       "surrogatepass". The surrogatepass error handler is only supported
+       if Py_DecodeLocale() and Py_EncodeLocale() use directly the UTF-8 codec;
+       it's only used on Windows.
+
+       initfsencoding() updates the encoding to the Python codec name.
+       For example, "ANSI_X3.4-1968" is replaced with "ascii".
+
+       On Windows, sys._enablelegacywindowsfsencoding() sets the
+       encoding/errors to mbcs/replace at runtime.
+
+
+       See Py_FileSystemDefaultEncoding and Py_FileSystemDefaultEncodeErrors.
+       */
+    wchar_t *filesystem_encoding;
+    wchar_t *filesystem_errors;
+
+    wchar_t *pycache_prefix;  /* PYTHONPYCACHEPREFIX, -X pycache_prefix=PATH */
+    int parse_argv;           /* Parse argv command line arguments? */
+
+    /* Command line arguments (sys.argv).
+
+       Set parse_argv to 1 to parse argv as Python command line arguments
+       and then strip Python arguments from argv.
+
+       If argv is empty, an empty string is added to ensure that sys.argv
+       always exists and is never empty. */
+    PyWideStringList argv;
+
+    /* Program name:
+
+       - If Py_SetProgramName() was called, use its value.
+       - On macOS, use PYTHONEXECUTABLE environment variable if set.
+       - If WITH_NEXT_FRAMEWORK macro is defined, use __PYVENV_LAUNCHER__
+         environment variable is set.
+       - Use argv[0] if available and non-empty.
+       - Use "python" on Windows, or "python3 on other platforms. */
+    wchar_t *program_name;
+
+    PyWideStringList xoptions;     /* Command line -X options */
+    PyWideStringList warnoptions;  /* Warnings options */
+
+    /* If equal to zero, disable the import of the module site and the
+       site-dependent manipulations of sys.path that it entails. Also disable
+       these manipulations if site is explicitly imported later (call
+       site.main() if you want them to be triggered).
+
+       Set to 0 by the -S command line option. If set to -1 (default), it is
+       set to !Py_NoSiteFlag. */
+    int site_import;
+
+    /* Bytes warnings:
+
+       * If equal to 1, issue a warning when comparing bytes or bytearray with
+         str or bytes with int.
+       * If equal or greater to 2, issue an error.
+
+       Incremented by the -b command line option. If set to -1 (default), inherit
+       Py_BytesWarningFlag value. */
+    int bytes_warning;
+
+    /* If greater than 0, enable inspect: when a script is passed as first
+       argument or the -c option is used, enter interactive mode after
+       executing the script or the command, even when sys.stdin does not appear
+       to be a terminal.
+
+       Incremented by the -i command line option. Set to 1 if the PYTHONINSPECT
+       environment variable is non-empty. If set to -1 (default), inherit
+       Py_InspectFlag value. */
+    int inspect;
+
+    /* If greater than 0: enable the interactive mode (REPL).
+
+       Incremented by the -i command line option. If set to -1 (default),
+       inherit Py_InteractiveFlag value. */
+    int interactive;
+
+    /* Optimization level.
+
+       Incremented by the -O command line option. Set by the PYTHONOPTIMIZE
+       environment variable. If set to -1 (default), inherit Py_OptimizeFlag
+       value. */
+    int optimization_level;
+
+    /* If greater than 0, enable the debug mode: turn on parser debugging
+       output (for expert only, depending on compilation options).
+
+       Incremented by the -d command line option. Set by the PYTHONDEBUG
+       environment variable. If set to -1 (default), inherit Py_DebugFlag
+       value. */
+    int parser_debug;
+
+    /* If equal to 0, Python won't try to write ``.pyc`` files on the
+       import of source modules.
+
+       Set to 0 by the -B command line option and the PYTHONDONTWRITEBYTECODE
+       environment variable. If set to -1 (default), it is set to
+       !Py_DontWriteBytecodeFlag. */
+    int write_bytecode;
+
+    /* If greater than 0, enable the verbose mode: print a message each time a
+       module is initialized, showing the place (filename or built-in module)
+       from which it is loaded.
+
+       If greater or equal to 2, print a message for each file that is checked
+       for when searching for a module. Also provides information on module
+       cleanup at exit.
+
+       Incremented by the -v option. Set by the PYTHONVERBOSE environment
+       variable. If set to -1 (default), inherit Py_VerboseFlag value. */
+    int verbose;
+
+    /* If greater than 0, enable the quiet mode: Don't display the copyright
+       and version messages even in interactive mode.
+
+       Incremented by the -q option. If set to -1 (default), inherit
+       Py_QuietFlag value. */
+    int quiet;
+
+   /* If greater than 0, don't add the user site-packages directory to
+      sys.path.
+
+      Set to 0 by the -s and -I command line options , and the PYTHONNOUSERSITE
+      environment variable. If set to -1 (default), it is set to
+      !Py_NoUserSiteDirectory. */
+    int user_site_directory;
+
+    /* If non-zero, configure C standard steams (stdio, stdout,
+       stderr):
+
+       - Set O_BINARY mode on Windows.
+       - If buffered_stdio is equal to zero, make streams unbuffered.
+         Otherwise, enable streams buffering if interactive is non-zero. */
+    int configure_c_stdio;
+
+    /* If equal to 0, enable unbuffered mode: force the stdout and stderr
+       streams to be unbuffered.
+
+       Set to 0 by the -u option. Set by the PYTHONUNBUFFERED environment
+       variable.
+       If set to -1 (default), it is set to !Py_UnbufferedStdioFlag. */
+    int buffered_stdio;
+
+    /* Encoding of sys.stdin, sys.stdout and sys.stderr.
+       Value set from PYTHONIOENCODING environment variable and
+       Py_SetStandardStreamEncoding() function.
+       See also 'stdio_errors' attribute. */
+    wchar_t *stdio_encoding;
+
+    /* Error handler of sys.stdin and sys.stdout.
+       Value set from PYTHONIOENCODING environment variable and
+       Py_SetStandardStreamEncoding() function.
+       See also 'stdio_encoding' attribute. */
+    wchar_t *stdio_errors;
+
+#ifdef MS_WINDOWS
+    /* If greater than zero, use io.FileIO instead of WindowsConsoleIO for sys
+       standard streams.
+
+       Set to 1 if the PYTHONLEGACYWINDOWSSTDIO environment variable is set to
+       a non-empty string. If set to -1 (default), inherit
+       Py_LegacyWindowsStdioFlag value.
+
+       See PEP 528 for more details. */
+    int legacy_windows_stdio;
+#endif
+
+    /* Value of the --check-hash-based-pycs command line option:
+
+       - "default" means the 'check_source' flag in hash-based pycs
+         determines invalidation
+       - "always" causes the interpreter to hash the source file for
+         invalidation regardless of value of 'check_source' bit
+       - "never" causes the interpreter to always assume hash-based pycs are
+         valid
+
+       The default value is "default".
+
+       See PEP 552 "Deterministic pycs" for more details. */
+    wchar_t *check_hash_pycs_mode;
+
+    /* --- Path configuration inputs ------------ */
+
+    /* If greater than 0, suppress _PyPathConfig_Calculate() warnings on Unix.
+       The parameter has no effect on Windows.
+
+       If set to -1 (default), inherit !Py_FrozenFlag value. */
+    int pathconfig_warnings;
+
+    wchar_t *pythonpath_env; /* PYTHONPATH environment variable */
+    wchar_t *home;          /* PYTHONHOME environment variable,
+                               see also Py_SetPythonHome(). */
+
+    /* --- Path configuration outputs ----------- */
+
+    int module_search_paths_set;  /* If non-zero, use module_search_paths */
+    PyWideStringList module_search_paths;  /* sys.path paths. Computed if
+                                       module_search_paths_set is equal
+                                       to zero. */
+
+    wchar_t *executable;        /* sys.executable */
+    wchar_t *base_executable;   /* sys._base_executable */
+    wchar_t *prefix;            /* sys.prefix */
+    wchar_t *base_prefix;       /* sys.base_prefix */
+    wchar_t *exec_prefix;       /* sys.exec_prefix */
+    wchar_t *base_exec_prefix;  /* sys.base_exec_prefix */
+
+    /* --- Parameter only used by Py_Main() ---------- */
+
+    /* Skip the first line of the source ('run_filename' parameter), allowing use of non-Unix forms of
+       "#!cmd".  This is intended for a DOS specific hack only.
+
+       Set by the -x command line option. */
+    int skip_source_first_line;
+
+    wchar_t *run_command;   /* -c command line argument */
+    wchar_t *run_module;    /* -m command line argument */
+    wchar_t *run_filename;  /* Trailing command line argument without -c or -m */
+
+    /* --- Private fields ---------------------------- */
+
+    /* Install importlib? If set to 0, importlib is not initialized at all.
+       Needed by freeze_importlib. */
+    int _install_importlib;
+
+    /* If equal to 0, stop Python initialization before the "main" phase */
+    int _init_main;
+
+} PyConfig;
+```
+
+PyConfig中定义了运行时的基本配置，包括：
+- 是否支持错误处理、警告信息
+- 内存分配状态
+- 运行时设置的环境变量信息
+- 是否加载依赖路径
+- 定义执行的方式
+  - 输入参数为-c对应command模式
+  - 输入参数为-m对应module模式
+  - 除了-c和-m之外为filename模式
+- 各种模式的运行时标志，例如调试和优化模式
+- 提供了执行模式，例如是否传递文件名stdin或模块名称
+
+配置数据结构的主要功能是在CPython运行时启用和禁用各种功能。
+
+文件`Python/initconfig.c`是`initconfig.h`对应的C文件，建立了从环境变量和运行时命令行标志读取设置的逻辑。
+下面介绍`initconfig.c`中部分重要的函数：
+-  `config_read_env_vars` 函数读取环境变量并将其用于分配配置中设置的值。
+```
+static PyStatus
+config_read_env_vars(PyConfig *config)
+{
+    PyStatus status;
+    int use_env = config->use_environment;
+
+    /* Get environment variables */
+    _Py_get_env_flag(use_env, &config->parser_debug, "PYTHONDEBUG");
+    _Py_get_env_flag(use_env, &config->verbose, "PYTHONVERBOSE");
+    _Py_get_env_flag(use_env, &config->optimization_level, "PYTHONOPTIMIZE");
+    _Py_get_env_flag(use_env, &config->inspect, "PYTHONINSPECT");
+
+    int dont_write_bytecode = 0;
+    _Py_get_env_flag(use_env, &dont_write_bytecode, "PYTHONDONTWRITEBYTECODE");
+    if (dont_write_bytecode) {
+        config->write_bytecode = 0;
+    }
+
+    int no_user_site_directory = 0;
+    _Py_get_env_flag(use_env, &no_user_site_directory, "PYTHONNOUSERSITE");
+    if (no_user_site_directory) {
+        config->user_site_directory = 0;
+    }
+
+    int unbuffered_stdio = 0;
+    _Py_get_env_flag(use_env, &unbuffered_stdio, "PYTHONUNBUFFERED");
+    if (unbuffered_stdio) {
+        config->buffered_stdio = 0;
+    }
+
+#ifdef MS_WINDOWS
+    _Py_get_env_flag(use_env, &config->legacy_windows_stdio,
+                 "PYTHONLEGACYWINDOWSSTDIO");
+#endif
+
+    if (config_get_env(config, "PYTHONDUMPREFS")) {
+        config->dump_refs = 1;
+    }
+    if (config_get_env(config, "PYTHONMALLOCSTATS")) {
+        config->malloc_stats = 1;
+    }
+
+    if (config->pythonpath_env == NULL) {
+        status = CONFIG_GET_ENV_DUP(config, &config->pythonpath_env,
+                                    L"PYTHONPATH", "PYTHONPATH");
+        if (_PyStatus_EXCEPTION(status)) {
+            return status;
+        }
+    }
+
+    if (config->use_hash_seed < 0) {
+        status = config_init_hash_seed(config);
+        if (_PyStatus_EXCEPTION(status)) {
+            return status;
+        }
+    }
+
+    return _PyStatus_OK();
+}
+```
+- _PyConfig_Write函数-设置Py_xxx全局配置变量、初始化C标准流(stdin, stdout, stderr)
+- config_read_cmdline函数，读取命令行参数，如-c、-m、-V，返回值为PyStatus
+- config_parse_cmdline函数，根据输入从命令行参数设置处理模式，返回值为PyStatus
+```
+static PyStatus
+config_parse_cmdline(PyConfig *config, PyWideStringList *warnoptions,
+                     Py_ssize_t *opt_index)
+{
+    PyStatus status;
+    const PyWideStringList *argv = &config->argv;
+    int print_version = 0;
+    const wchar_t* program = config->program_name;
+
+    _PyOS_ResetGetOpt();
+    do {
+        int longindex = -1;
+        int c = _PyOS_GetOpt(argv->length, argv->items, &longindex);
+        if (c == EOF) {
+            break;
+        }
+
+        if (c == 'c') {
+            if (config->run_command == NULL) {
+                /* -c is the last option; following arguments
+                   that look like options are left for the
+                   command to interpret. */
+                size_t len = wcslen(_PyOS_optarg) + 1 + 1;
+                wchar_t *command = PyMem_RawMalloc(sizeof(wchar_t) * len);
+                if (command == NULL) {
+                    return _PyStatus_NO_MEMORY();
+                }
+                memcpy(command, _PyOS_optarg, (len - 2) * sizeof(wchar_t));
+                command[len - 2] = '\n';
+                command[len - 1] = 0;
+                config->run_command = command;
+            }
+            break;
+        }
+
+        if (c == 'm') {
+            /* -m is the last option; following arguments
+               that look like options are left for the
+               module to interpret. */
+            if (config->run_module == NULL) {
+                config->run_module = _PyMem_RawWcsdup(_PyOS_optarg);
+                if (config->run_module == NULL) {
+                    return _PyStatus_NO_MEMORY();
+                }
+            }
+            break;
+        }
+
+        switch (c) {
+        case 0:
+            // Handle long option.
+            assert(longindex == 0); // Only one long option now.
+            if (wcscmp(_PyOS_optarg, L"always") == 0
+                || wcscmp(_PyOS_optarg, L"never") == 0
+                || wcscmp(_PyOS_optarg, L"default") == 0)
+            {
+                status = PyConfig_SetString(config, &config->check_hash_pycs_mode,
+                                            _PyOS_optarg);
+                if (_PyStatus_EXCEPTION(status)) {
+                    return status;
+                }
+            } else {
+                fprintf(stderr, "--check-hash-based-pycs must be one of "
+                        "'default', 'always', or 'never'\n");
+                config_usage(1, program);
+                return _PyStatus_EXIT(2);
+            }
+            break;
+
+        case 'b':
+            config->bytes_warning++;
+            break;
+
+        case 'd':
+            config->parser_debug++;
+            break;
+
+        case 'i':
+            config->inspect++;
+            config->interactive++;
+            break;
+
+        case 'E':
+        case 'I':
+        case 'X':
+            /* option handled by _PyPreCmdline_Read() */
+            break;
+
+        /* case 'J': reserved for Jython */
+
+        case 'O':
+            config->optimization_level++;
+            break;
+
+        case 'B':
+            config->write_bytecode = 0;
+            break;
+
+        case 's':
+            config->user_site_directory = 0;
+            break;
+
+        case 'S':
+            config->site_import = 0;
+            break;
+
+        case 't':
+            /* ignored for backwards compatibility */
+            break;
+
+        case 'u':
+            config->buffered_stdio = 0;
+            break;
+
+        case 'v':
+            config->verbose++;
+            break;
+
+        case 'x':
+            config->skip_source_first_line = 1;
+            break;
+
+        case 'h':
+        case '?':
+            config_usage(0, program);
+            return _PyStatus_EXIT(0);
+
+        case 'V':
+            print_version++;
+            break;
+
+        case 'W':
+            status = PyWideStringList_Append(warnoptions, _PyOS_optarg);
+            if (_PyStatus_EXCEPTION(status)) {
+                return status;
+            }
+            break;
+
+        case 'q':
+            config->quiet++;
+            break;
+
+        case 'R':
+            config->use_hash_seed = 0;
+            break;
+
+        /* This space reserved for other options */
+
+        default:
+            /* unknown argument: parsing failed */
+            config_usage(1, program);
+            return _PyStatus_EXIT(2);
+        }
+    } while (1);
+
+    if (print_version) {
+        printf("Python %s\n",
+                (print_version >= 2) ? Py_GetVersion() : PY_VERSION);
+        return _PyStatus_EXIT(0);
+    }
+
+    if (config->run_command == NULL && config->run_module == NULL
+        && _PyOS_optind < argv->length
+        && wcscmp(argv->items[_PyOS_optind], L"-") != 0
+        && config->run_filename == NULL)
+    {
+        config->run_filename = _PyMem_RawWcsdup(argv->items[_PyOS_optind]);
+        if (config->run_filename == NULL) {
+            return _PyStatus_NO_MEMORY();
+        }
+    }
+
+    if (config->run_command != NULL || config->run_module != NULL) {
+        /* Backup _PyOS_optind */
+        _PyOS_optind--;
+    }
+
+    *opt_index = _PyOS_optind;
+
+    return _PyStatus_OK();
+}
+```
 
 ## 编译
 
@@ -49,14 +592,186 @@
 ### 前端
 
 #### Tokens
+python内置的Token Type定义在Lib/token.py，部分内容如下：
+```
+ENDMARKER = 0
+NAME = 1
+NUMBER = 2
+STRING = 3
+NEWLINE = 4
+INDENT = 5
+DEDENT = 6
+LPAR = 7
+RPAR = 8
+LSQB = 9
+RSQB = 10
+COLON = 11
+COMMA = 12
+SEMI = 13
+PLUS = 14
+MINUS = 15
+STAR = 16
+SLASH = 17
+VBAR = 18
+AMPER = 19
+LESS = 20
+……
 
-python实现的tokenize位于 Lib/tokenize.py。
+EXACT_TOKEN_TYPES = {
+    '!=': NOTEQUAL,
+    '%': PERCENT,
+    '%=': PERCENTEQUAL,
+    '&': AMPER,
+    '&=': AMPEREQUAL,
+    '(': LPAR,
+    ')': RPAR,
+    '*': STAR,
+    '**': DOUBLESTAR,
+    '**=': DOUBLESTAREQUAL,
+    ……
+}
+```
+上述Tokens由`Tools/scripts/generate_token.py`工具自动生成
+
+python实现的词法分析器位于`Lib/tokenize.py`，其作用如下：
+tokenize(readline)是一个生成器，它将一个字节流分解为Python的token。它根据PEP-0263对字节进行解码。
+它接受一个类似readline的方法，该方法被用于反复调用以获取下一行输入(直到EOF)。它用这些生成5元组，5元组结构如下：
+- the token type (详情见token.py)
+- the token (a string)
+- the starting (row, column) indices of the token (a 2-tuple of ints)
+- the ending (row, column) indices of the token (a 2-tuple of ints)
+- the original line (string)
+部分内容如下：
+```
+ # Parse the arguments and options
+    parser = argparse.ArgumentParser(prog='python -m tokenize')
+    parser.add_argument(dest='filename', nargs='?',
+                        metavar='filename.py',
+                        help='the file to tokenize; defaults to stdin')
+    parser.add_argument('-e', '--exact', dest='exact', action='store_true',
+                        help='display token names using the exact type')
+    args = parser.parse_args()
+
+    try:
+        # Tokenize the input
+        if args.filename:
+            filename = args.filename
+            with _builtin_open(filename, 'rb') as f:
+                tokens = list(tokenize(f.readline))
+        else:
+            filename = "<stdin>"
+            tokens = _tokenize(sys.stdin.readline, None)
+
+        # Output the tokenization
+        for token in tokens:
+            token_type = token.type
+            if args.exact:
+                token_type = token.exact_type
+            token_range = "%d,%d-%d,%d:" % (token.start + token.end)
+            print("%-20s%-15s%-15r" %
+                  (token_range, tok_name[token_type], token.string))
+    except IndentationError as err:
+        line, column = err.args[1][1:3]
+        error(err.args[0], filename, (line, column))
+    except TokenError as err:
+        line, column = err.args[1]
+        error(err.args[0], filename, (line, column))
+    except SyntaxError as err:
+        error(err, filename)
+    except OSError as err:
+        error(err)
+    except KeyboardInterrupt:
+        print("interrupted\n")
+    except Exception as err:
+        perror("unexpected error: %s" % err)
+        raise
+```
 
 #### Grammer
 
-pegn通过Grammer文件生成解析表，如果修改了Grammer文件，需要重新生成解析表。
+Python 的语法文件使用具有正则表达式语法的 Extended-BNF（EBNF）规范。
 
-pege: EBNF -> NFA -> DFA。
+Cpython所支持的Grammar和Token具体内容位于的Grammar文件夹下的两个文件中。
+
+其中，Grammer/Grammar部分内容如下：
+```
+stmt: simple_stmt | compound_stmt
+simple_stmt: small_stmt (';' small_stmt)* [';'] NEWLINE
+small_stmt: (expr_stmt | del_stmt | pass_stmt | flow_stmt |
+             import_stmt | global_stmt | nonlocal_stmt | assert_stmt)
+expr_stmt: testlist_star_expr (annassign | augassign (yield_expr|testlist) |
+                     [('=' (yield_expr|testlist_star_expr))+ [TYPE_COMMENT]] )
+annassign: ':' test ['=' (yield_expr|testlist_star_expr)]
+testlist_star_expr: (test|star_expr) (',' (test|star_expr))* [',']
+augassign: ('+=' | '-=' | '*=' | '@=' | '/=' | '%=' | '&=' | '|=' | '^=' |
+            '<<=' | '>>=' | '**=' | '//=')
+# For normal and annotated assignments, additional restrictions enforced by the interpreter
+del_stmt: 'del' exprlist
+pass_stmt: 'pass'
+flow_stmt: break_stmt | continue_stmt | return_stmt | raise_stmt | yield_stmt
+break_stmt: 'break'
+continue_stmt: 'continue'
+return_stmt: 'return' [testlist_star_expr]
+yield_stmt: yield_expr
+raise_stmt: 'raise' [test ['from' test]]
+import_stmt: import_name | import_from
+import_name: 'import' dotted_as_names
+……
+```
+对应的Grammar/Tokens的部分内容如下：
+```
+LPAR                    '('
+RPAR                    ')'
+LSQB                    '['
+RSQB                    ']'
+COLON                   ':'
+COMMA                   ','
+SEMI                    ';'
+PLUS                    '+'
+MINUS                   '-'
+STAR                    '*'
+SLASH                   '/'
+VBAR                    '|'
+AMPER                   '&'
+LESS                    '<'
+GREATER                 '>'
+EQUAL                   '='
+DOT                     '.'
+PERCENT                 '%'
+LBRACE                  '{'
+RBRACE                  '}'
+EQEQUAL                 '=='
+NOTEQUAL                '!='
+LESSEQUAL               '<='
+GREATEREQUAL            '>='
+TILDE                   '~'
+CIRCUMFLEX              '^'
+LEFTSHIFT               '<<'
+RIGHTSHIFT              '>>'
+DOUBLESTAR              '**'
+PLUSEQUAL               '+='
+……
+```
+需要注意的是Grammar文件本身不会被Python编译器直接使用，而是使用一个名为 pgen 的工具，来创建的解析器表。
+pgen 会读取语法文件并将其转换为解析器表。如果我们修改了语法文件，则需要重新生成解析器表并重新编译Python。
+
+pege工具将语法文件Grammar/Grammar使用的Extended-BNF（EBNF）语句转化为非确定有限自动机NFA，
+然后再将NFA转化为确定有限自动机DFA。
+
+下面演示一个修改语法文件的简单样例：
+
+再python中，原pass语句定义为：pass_stmt: 'pass'
+
+若要增加新的可以接受的关键字proceed。则改为：pass_stmt: 'pass' | 'proceed'
+
+重新编译语法文件，以生成新的解析器表：（不同的操作系统对应命令如下）
+
+- 在macOS和Linux上，使用命令`make regen-grammar`以运行`pgen`更改后的语法文件。
+- 在Windows上，需用PCbuild文件夹下的批处理脚本运行，使用命令`build.bat --regen`。
+
+执行完上述命令之后，生成新的`Include/graminit.h`和`Python/graminit.c`，即基于新的语法文件生成的解析表。
+
+然后重新编译CPython，即完成具有新的语法的python解释器。
 
 
 
@@ -65,6 +780,10 @@ pege: EBNF -> NFA -> DFA。
 1. Python/pythonrun.c/`PyRun_FileExFlags()`
    1. `PyParser_ASTFromFileObject()`把FILE句柄转化为mod, 类型为[mod_ty](#mod_ty)。
    2. `run_mod()`通过`PyAST_CompileObject`把mod转化为PyCodeObject，然后把其送入`run_eval_code_obj`函数。
+
+
+
+
 
 ### 后端
 
