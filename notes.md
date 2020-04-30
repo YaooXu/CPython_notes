@@ -656,8 +656,182 @@ pprint(lex('a + 1'))
  ['ENDMARKER', '']]
 ```
 #### 将CST转化为AST
+将CST转化为AST的核心代码位于`Python/ast.c`中，其中`PyAST_FromNode()`函数负责从CST到AST的转换。
+在上面我们已经介绍了Python解释器进程以`node * tree`的格式创建了一个CST。然后跳转到`Python/ast.c`中的`PyAST_FromNodeObject()`，你可以看到它接收`node * tree`，`文件名`，`compiler flags`和`PyArena`，此函数的返回类型是定义在文件`Include/Python-ast.h`的`mod_ty`类型。
+AST类型都列在`Parser/Python.asdl`中,你将看到所有列出的模块类型，语句类型，表达式类型，运算符和结构。
+`Include/Python-ast.h`中的参数和名称与`Parser/Python.asdl`中指定的参数和名称直接相关。在`Parser/Python.asdl`中我们可以看到下面代码
+```
+-- ASDL's 5 builtin types are:
+-- identifier, int, string, object, constant
 
+module Python
+{
+    mod = Module(stmt* body, type_ignore *type_ignores)
+        | Interactive(stmt* body)
+        | Expression(expr body)
+        | FunctionType(expr* argtypes, expr returns)
+
+        -- not really an actual node but useful in Jython's typesystem.
+        | Suite(stmt* body)
+    ...
+```
+我们可以得知该文件为python的抽象文法定义。接下来我们再仔细看下`Python/ast.c`中的`PyAST_FromNodeObject()`函数。
+```
+mod_ty
+PyAST_FromNodeObject(const node *n, PyCompilerFlags *flags,
+                     PyObject *filename, PyArena *arena)
+{
+    ...
+    switch (TYPE(n)) {
+        case file_input:
+            stmts = _Py_asdl_seq_new(num_stmts(n), arena);
+            if (!stmts)
+                goto out;
+            for (i = 0; i < NCH(n) - 1; i++) {
+                ch = CHILD(n, i);
+                if (TYPE(ch) == NEWLINE)
+                    continue;
+                REQ(ch, stmt);
+                num = num_stmts(ch);
+                if (num == 1) {
+                    s = ast_for_stmt(&c, ch);
+                    if (!s)
+                        goto out;
+                    asdl_seq_SET(stmts, k++, s);
+                }
+                else {
+                    ch = CHILD(ch, 0);
+                    REQ(ch, simple_stmt);
+                    for (j = 0; j < num; j++) {
+                        s = ast_for_stmt(&c, CHILD(ch, j * 2));
+                        if (!s)
+                            goto out;
+                        asdl_seq_SET(stmts, k++, s);
+                    }
+                }
+            }
+
+            /* Type ignores are stored under the ENDMARKER in file_input. */
+            ...
+
+            res = Module(stmts, type_ignores, arena);
+            break;
+        case eval_input: {
+            expr_ty testlist_ast;
+
+            /* XXX Why not comp_for here? */
+            testlist_ast = ast_for_testlist(&c, CHILD(n, 0));
+            if (!testlist_ast)
+                goto out;
+            res = Expression(testlist_ast, arena);
+            break;
+        }
+        case single_input:
+            ...
+            break;
+        case func_type_input:
+            ...
+        ...
+    return res;
+}
+```
+对于python文件输入，该函数遍历子节点和创建语句节点的逻辑在`ast_for_stmt()`内。如果模块中只有1个语句，则调用此函数一次，如果有多个语句，则调用循环。然后使用`PyArena`返回生成的Module。
+在`ast_for_stmt()`函数里,也有一个switch语句，它会判断每个可能的语句类型(`simple_stmt`，`compound_stmt`等)，以及用于确定节点类的参数的代码。
+```
+static expr_ty
+ast_for_power(struct compiling *c, const node *n)
+{
+    /* power: atom trailer* ('**' factor)*
+     */
+    expr_ty e;
+    REQ(n, power);
+    e = ast_for_atom_expr(c, CHILD(n, 0));
+    if (!e)
+        return NULL;
+    if (NCH(n) == 1)
+        return e;
+    if (TYPE(CHILD(n, NCH(n) - 1)) == factor) {
+        expr_ty f = ast_for_expr(c, CHILD(n, NCH(n) - 1));
+        if (!f)
+            return NULL;
+        e = BinOp(e, Pow, f, LINENO(n), n->n_col_offset,
+                  n->n_end_lineno, n->n_end_col_offset, c->c_arena);
+    }
+    return e;
+}
+```
+更多关于python中ast节点的东西可以参考：[python内置ast模块](https://docs.python.org/zh-cn/3.8/library/ast.html)，[ast节点详细分析](https://greentreesnakes.readthedocs.io/en/latest/index.html)
+我们可以简单看一看最终生成的ast具体样子,在python的ast模块中有`ast.parse(source, filename='<unknown>', mode='exec', *, type_comments=False, feature_version=None)`函数能够帮我们把源码解析为AST节点。
+以下面程序为例：
+```
+import ast
+func_def = \
+"""
+def add(x, y):
+    return x + y
+print(add(3, 5))
+"""
+r_node = ast.parse(func_def)
+print(ast.dump(r_node))
+```
+得到ast输出：
+```
+Module(
+    body=[
+        FunctionDef(
+            name='add', 
+            args=arguments(
+                args=[
+                    arg(arg='x',annotation=None), 
+                    arg(arg='y', annotation=None)
+                    ], 
+                vararg=None, 
+                kwonlyargs=[], 
+                kw_defaults=[], 
+                kwarg=None, 
+                defaults=[]
+                ), 
+            body=[
+                Return(
+                    value=BinOp(
+                        left=Name(id='x', ctx=Load()), 
+                        op=Add(), 
+                        right=Name(id='y', ctx=Load())
+                        )
+                    )
+                ], 
+                decorator_list=[], 
+                returns=None
+            ), 
+        Expr(
+            value=Call(
+                func=Name(id='print', ctx=Load()), 
+                args=[Call(
+                    func=Name(id='add', ctx=Load()), 
+                    args=[Num(n=3), Num(n=5)], keywords=[]
+                    )], 
+                keywords=[]
+                )
+            )
+        ]
+    )
+```
+为了更方便的看到抽象语法树的结果我们可以使用第三方库instaviz可视化结果  
+运行下面程序
+```
+import instaviz
+def add(x, y):
+    return x + y
+instaviz.show(add)
+```
+这样我们就能通过浏览器访问8080端口查看该函数的ast可视化结果了，访问`http://localhost:8080/`
+![效果图](assets/Snipaste_2020-04-30_21-46-53.jpg)
+选择抽象语法树中的某个节点就能在左边看到他的json格式语法树。
 #### 将AST转化为字节码
+在得到python程序的AST后，编译生成中间代码字节码的最后一步就是要将AST转化为字节码。而这个过程又分为：
+1. 遍历AST并创建一个控制流图(Control Flow Graph, CFG)，它表示执行的逻辑顺序。
+2. 将CFG中的节点转换为较小的可执行语句，即字节码
+创建符号表（?）
 
 
 
