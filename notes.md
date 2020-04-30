@@ -4,40 +4,37 @@
 
 > Cpython代码命名规则:
 >
-> -  `Py` 前缀为公共函数, 非静态函数。 Py\_前缀保留用于Py_FatalError等全局服务例程。特定的对象（如特定的对象类型API）使用较长的前缀，例如PyString_用于字符串函数。
+> -  `Py` 前缀为公共函数, 非静态函数。 `Py_`前缀保留用于`Py_FatalError`等全局服务例程。特定的对象（如特定的对象类型API）使用较长的前缀，例如`PyString_`用于字符串函数。
 > - 公共函数使用大小写混合和下划线，如: `PyObject_GetAttr`, `Py_BuildValue`, `PyExc_TypeError`。
-> - 有时，加载器必须能够看到内置函数。使用\_Py前缀，例如_PyObject_Dump。
-> - `宏需要使用大小写混合的前缀然后使用大写`，如`PyString_AS_STRING`, `Py_PRINT_RAW`。
+> - 有时，加载器必须能够看到内置函数。使用`_Py`前缀，例如`_PyObject_Dump`。
+> - 宏需要使用大小写混合的前缀然后使用大写，如`PyString_AS_STRING`, `Py_PRINT_RAW`。
 
+## CPython介绍
 
+CPython是Python的**官方**实现，使用C编写的，我们一般所运行的Python均为CPython。
 
-
+除此之外还有其他实现比如PyPy（Python实现的Python），Cyhton（可简单的认为就是给Python加上了静态类型，会直接编译为二进制程序，性能较Python会有很大提升），Jython（Java实现的Python）。
 
 ## 整体运行流程
 
+一共有五种方式可以运行Python，分别如下：
+
+- 通过-c执行单个命令
+- 通过-m运行模块
+- 运行文件
+- 通过pipe运行stdin的输入
+- 通过交互式解释器运行
+
+整体的执行过程如下，该文档以解释.py文件的运行流程为主。
+
 ![Python run swim lane diagram](assets/swim-lanes-chart-1.9fb3000aad85.png)
-
-1. 
-
-### 运行方式
-
-#### -c
-
-```
-./python -c "print('hi')"
-```
-
-![Flow chart of pymain_run_command](assets/pymain_run_command.f5da561ba7d5.png)
-
-1.  `pymain_run_command()`中调用`PyUnicode_FromWideChar()`把-c之后的参数从wchar_t *（int *)转化为str。
-
-#### -m
 
 ## 初始配置 
 
 ### init
 在执行任何Python代码之前，首先要建立基础的配置。
 运行时的配置是在`Include/cpython/initconfig.h`中定义的数据结构PyConfig，其部分结构如下：
+
 ```
 typedef struct {
     int _config_version;  /* Internal configuration version,
@@ -108,16 +105,16 @@ typedef struct {
 ```
 
 PyConfig中定义了运行时的基本配置，包括：
-- faulthandler成员：是否支持错误处理
-- bytes_warning成员：字节警告信息
-- malloc_stats成员：内存分配状态
-- use_environment、pythonpath_env成员：运行时设置的环境变量信息
-- executable等成员：设置sys信息
-- module_search_paths成员：设置sys.path信息
+- faulthandler：是否支持错误处理
+- bytes_warning：字节警告信息
+- malloc_stats：内存分配状态
+- use_environment、pythonpath_env：运行时设置的环境变量信息
+- executable等：设置sys信息
+- module_search_paths：设置sys.path信息
 - 定义执行的方式
-  - run_command成员：输入参数为-c对应command模式
-  - run_module成员：输入参数为-m对应module模式
-  - run_filename成员：除了-c和-m之外为filename模式
+  - run_command：输入参数为-c对应command模式
+  - run_module：输入参数为-m对应module模式
+  - run_filename：除了-c和-m之外为filename模式
 - 各种模式的运行时标志，例如调试和优化模式
 - 提供了执行模式，例如是否传递文件名stdin或模块名称
 
@@ -214,12 +211,16 @@ config_parse_cmdline(PyConfig *config, PyWideStringList *warnoptions,
 
 ## python的编译过程
 在编译原理中我们学习到对于一种语言的编译，往往有词法分析，语法分析，语义处理，中间代码生成，代码优化，代码生成这几个阶段。
-python作为一门解释性语言，在编译时往往是并不产生目标机器代码，而是生成一种叫做字节码的中间代码，并交给python虚拟机去执行。接下来我们将介绍python源代码是如何转化为字节码的。
+python作为一门解释性语言，在编译时往往是并不产生目标机器代码，而是生成一种叫做字节码（byte code)的中间代码，并交给python虚拟机去执行。接下来我们将介绍python源代码是如何转化为字节码的。
 对于python的编译过程，我们可以简单的分成以下这几部分：
-- Tokenizer进行词法分析，把源程序分解为Token
-- Parser根据Token创建CST
-- CST被转换为AST
-- AST被编译为字节码  
+
+1. Tokenizer进行词法分析，把源程序分解为Token
+
+2. Parser根据Token创建CST
+
+3. CST被转换为AST
+
+4. AST被编译为字节码  
 
 在语言分析的初步我们需要明确该语言的tokens和grammar
 ### Tokens
@@ -485,7 +486,8 @@ static const label labels[184] = {
 ...
 ```
 这里的几种数据类型都在grammar.h中进行了定义
--   `label`是从状态转移到另外一个状态所经过的边所对应的符号，可以      是非终结符，也可以是终结符。`label`一定依附于一条或者多条边。
+-   `label`是从状态转移到另外一个状态所经过的边所对应的符号，可以是非终结符，也可以是终结符。`label`一定依附于一条或者多条边。
+    
     ```
     typedef struct {
     int          lb_type;
@@ -729,7 +731,7 @@ typedef struct {
 
 #### 执行环境（栈帧模拟）
 
-​	虽然PyCodeObject包含了字节码序列和其他信息，但是却没有包含程序运行时的动态信息，因此在python执行的时候, 虚拟机实际上面对的不是一个 `PyCodeObject` 对象, 而是另一个 `PyFrameObject` 对象，它就是我们说的执行环境, 也是python在高级层次上对栈帧的模拟，x86上程序运行方式如下：
+​	虽然PyCodeObject包含了字节码序列和其他信息，但是却没有包含程序运行时的动态信息，因此在python执行的时候, 虚拟机实际上面对的不是一个 `PyCodeObject` 对象, 而是另一个 `PyFrameObject` 对象，它就是我们说的执行环境, 也是python在高级层次上对x86程序运行时栈帧的模拟。在汇编课程中我们学习到x86上程序运行方式如下：
 
 ![1588048529337](assets/1588048529337-1588048529499.png)
 
@@ -774,7 +776,7 @@ typedef struct _frame {
 
 ​	相比于x86下的栈帧，PyFrameObject所包含的信息更多，下面依次分析其中的部分关键成员变量。
 
-​	f_code：存放着待执行的PyCodeObject，可以看到每一个PyFrameObject对象都维护一个PyCodeObject对象，说明一个PyFrameObject是对应着一个code block（*code block的范围可大可小. 可以是整个py文件, 可以是class, 可以是函数*）。
+​	f_code：存放着待执行的PyCodeObject，可以看到每一个PyFrameObject对象都维护一个PyCodeObject对象，说明一个PyFrameObject是对应着一个code block。
 
 ​	f_back：指向上一个PyFrameObject，在实际执行过程中，会把很多个PyFrameObject连接起来，使得新的栈帧在结束之后可以顺利回到旧的栈帧中
 
@@ -792,7 +794,7 @@ typedef struct _frame {
 
 #### 运行环境（线程、进程）
 
-​	Python在执行时，可能会有多个线程存在。Python虚拟机是对CPU的模拟可以把他看做软CPU，Python中的所有线程都使用这个软CPU来完成计算工作。真实机器上的任务切换机制对应到Python中，就是使不同的线程轮流使用虚拟机的机制。
+​	Python在执行时，可能会有多个线程存在。Python虚拟机是对CPU的模拟因此可以把他看做软CPU，Python中的所有线程都使用这个软CPU来完成计算工作。真实机器上的任务切换机制对应到Python中，就是使不同的线程轮流使用虚拟机的机制。
 ​	CPU切换任务时需要保存线程运行环境。对于Python来说，在切换线程之前，同样需要保存关于当前线程的信息。线程状态信息的抽象是通过 `PyThreadState` 对象来实现的, 一个线程将拥有一个`PyThreadState`对象。 `PyThreadState`不是对线程的模拟, 而是对线程状态的抽象。 python的线程仍然使用操作系统的原生线程。对于进程的抽象, 由 `PyInterPreterState` 对象来实现。
 
 ​	通常情况下, python只有一个interpreter, 其中维护了一个或多个PyThreadState对象, 这些对象对应的线程轮流使用上面提到的软CPU。 为了实现线程同步, python通过一个全局解释器锁GIL。
@@ -1052,3 +1054,10 @@ Python中5种模块类型之一的容器结构，是AST的实例，包含有：
 ```
 (((PyObject*)(o))->ob_refcnt)
 ```
+
+## 参考资料
+
+- [cpython-source-code-guide](cpython-source-code-guide)
+
+- [Python源码剖析](https://read.douban.com/reader/ebook/1499455/)
+
