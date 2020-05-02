@@ -677,7 +677,7 @@ module Python
         | Suite(stmt* body)
     ...
 ```
-我们可以得知该文件为python的抽象文法定义。接下来我们再仔细看下`Python/ast.c`中的`PyAST_FromNodeObject()`函数。
+我们可以得知该文件为python的抽象文法定义。接下来我们再仔细看下`Python/ast.c`中的`PyAST_FromNodeObject()`函数。这整个是一个递归下降的遍历分析的过程。
 ```
 mod_ty
 PyAST_FromNodeObject(const node *n, PyCompilerFlags *flags,
@@ -830,14 +830,114 @@ instaviz.show(add)
 ![效果图](assets/Snipaste_2020-04-30_21-46-53.jpg)
 选择抽象语法树中的某个节点就能在左边看到他的json格式语法树。
 #### 将AST转化为字节码
-在得到python程序的AST后，编译生成中间代码字节码的最后一步就是要将AST转化为字节码。而这个过程又分为：
-1. 遍历AST并创建一个控制流图(Control Flow Graph, CFG)，它表示执行的逻辑顺序。
-2. 将CFG中的节点转换为较小的可执行语句，即字节码
-创建符号表（?）
+在得到python程序的AST后，编译生成中间代码字节码的最后一步就是要将AST转化为字节码。这一步的主要过程发生在`Python/complie.c`中，在`PyAST_Compile()`函数中进行抽象语法树到字节码的转化。而这个过程分为以下几步：
+>1.检查future statements。这一步的目的是为了解析在python之后版本可能出现的新类型，实现了__future__模块，能够把下一个新版本的特性导入到当前版本，主要代码位于`Python/future.c`中。我们在这里不过多的阐述。
+>2.建立一个符号表。符号表的目的是提供一个名称空间，全局变量和局部变量的列表，供编译器用于引用和解析范围。建立符号表的过程在`Python/symtable.c`文件中，通过`PySymtable_BuildObject()`函数实现，而每种符号的定义在`Include/symtable.h`中。
+> 我们可以使用下面代码查看符号表的具体内容
+>> ```
+> >import symtable
+> >s = symtable.symtable('a * b + 1', filename='test.py', compile_type='eval')
+> >print([symbol.__dict__ for symbol in s.get_symbols()])
+> >```
+> 输出：
+>>```
+>>[{'_Symbol__name': 'a', '_Symbol__flags': 6160, '_Symbol__scope': 3, '_Symbol__namespaces': ()}, {'_Symbol__name': 'b', '_Symbol__flags': 6160, '_Symbol__scope': 3, '_Symbol__namespaces': ()}]
+>>```
+>3.生成basic blocks并组装成字节码。 调用`Python/complie.c`中的`editor_mod()`生成basic blocks并调用`Python/complie.c`中的`assemble()`函数使用dfs的方法对块进行搜索并组装成字节码。
+>流程代码：
+>>```
+>>static PyCodeObject *
+>>compiler_mod(struct compiler *c, mod_ty mod)
+>>{
+>>    PyCodeObject *co;
+>>    int addNone = 1;
+>>    static PyObject *module;
+>>    ...
+>>    switch (mod->kind) {
+>>    case Module_kind:
+>>        if (!compiler_body(c, mod->v.Module.body)) {
+>>            compiler_exit_scope(c);
+>>            return 0;
+>>        }
+>>        break;
+>>    case Interactive_kind:
+>>        ...
+>>    case Expression_kind:
+>>        ...
+>>    case Suite_kind:
+>>        ...
+>>    ...
+>>    co = assemble(c, addNone);
+>>    compiler_exit_scope(c);
+>>    return co;
+>>}
+>
+>4.字节码优化。字节码在发送到`PyCode_Optimize()`之前先发送到`PyCode_NewWithPosOnlyArgs()`。字节码优化过程的实现位于`Python/peephole.c`文件中。优化器会仔细检查字节码指令，并在某些情况下将其替换为其他指令。例如，有一个名为`constant unfolding`的优化程序,会对`a=2+3`这种语句直接优化成`a=5`。
+最后让我们简单的查看下python字节码的具体形式。我们先以下面程序为例子查看他的字节码。
+```
+def example(a):
+    x=a+2*a
+    if x<3:
+        return "x<3"
+    else:
+        return  "x>=3"
+print(example.__code__)
+print(example.__code__.co_code) # the bytecode as raw bytes
+print(list(example.__code__.co_code)) # the bytecode as numbers
+```
+输出结果
+```
+<code object example at 0x7f25b65c5520, file "./example.py", line 1>
+b'|\x00d\x01|\x00\x14\x00\x17\x00}\x01|\x01d\x02k\x00r\x18d\x03S\x00d\x04S\x00d\x00S\x00'
+[124, 0, 100, 1, 124, 0, 20, 0, 23, 0, 125, 1, 124, 1, 100, 2, 107, 0, 114, 24, 100, 3, 83, 0, 100, 4, 83, 0, 100, 0, 83, 0]
+```
+在这里我们编译了`example`函数，`example.__code__`是与其关联的code object，而`cond.__code__.co_code`就是它的字节码。当我们直接输出这个字节码，它看起来完全无法理解,但很幸运的是我们可以使用Python标准库中的dis模块，他是一个字节码反汇编器。反汇编器以为机器而写的底层代码作为输入，比如汇编代码和字节码，然后以人类可读的方式输出。当我们运行dis.dis, 它输出每个字节码的解释。我们接下来就可以把字节码输入进去查看效果。在之前代码基础上增加
+```
+import dis
+dis.dis(example)
+```
+得到输出
+```
+  2           0 LOAD_FAST                0 (a)
+              2 LOAD_CONST               1 (2)
+              4 LOAD_FAST                0 (a)
+              6 BINARY_MULTIPLY
+              8 BINARY_ADD
+             10 STORE_FAST               1 (x)
 
+  3          12 LOAD_FAST                1 (x)
+             14 LOAD_CONST               2 (3)
+             16 COMPARE_OP               0 (<)
+             18 POP_JUMP_IF_FALSE       24
 
+  4          20 LOAD_CONST               3 ('x<3')
+             22 RETURN_VALUE
 
+  6     >>   24 LOAD_CONST               4 ('x>=3')
+             26 RETURN_VALUE
+             28 LOAD_CONST               0 (None)
+             30 RETURN_VALUE
+```
+这些都是什么意思？让我们以第一条指令`LOAD_FAST`为例子。第一列的数字`2`表示对应源代码的行数。第二列的数字是字节码的索引，告诉我们指令``LOAD_FAST`在`0`位置。第三列是指令本身对应的人类可读的名字。如果第四列存在，它表示指令的参数。如果第五列存在，它是一个关于参数是什么的提示。
 
+考虑这个字节码的前几个字节：[124, 0, 100, 1, 124, 0]。这6个字节表示两条带参数的指令。我们可以使用dis.opname，一个字节到可读字符串的映射，来找到指令124,100分别代表什么：
+```
+>>> dis.opname[124]
+'LOAD_FAST'
+>>> dis.opname[100]
+'LOAD_CONST'
+```
+可以看到这与我们使用dis反汇编模块的结果一致，然后这里的0，1，0分别为三条指令的参数。
+我们再重新看一下x=a+这行代码对应的字节码,由于这位于第二行，我们可以很容易找到这行的字节码：
+```
+  2           0 LOAD_FAST                0 (a)
+              2 LOAD_CONST               1 (2)
+              4 LOAD_FAST                0 (a)
+              6 BINARY_MULTIPLY
+              8 BINARY_ADD
+             10 STORE_FAST               1 (x)
+```
+python解释器是一个栈机器，所以它必须通过操作栈来完成这个加法。解释器先执行第一条指令，LOAD_FAST，把第一个数a压到栈中。接着LOAD_CONST 把第二个数2也压到栈中。然后,第三条指令LOAD_FAST继续把第三个数a压入栈中。之后，BINARY_MULTIPLY,先把两个数2,a从栈中弹出，相乘，再把结果压入栈中。然后一样的， BINARY_ADD将a和2*a从栈中弹出，相加，再把结果压入栈中。最后把结果弹出并赋给x。
 
 
 
