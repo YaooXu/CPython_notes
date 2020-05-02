@@ -872,7 +872,8 @@ instaviz.show(add)
 >>    return co;
 >>}
 >
->4.字节码优化。字节码在发送到`PyCode_Optimize()`之前先发送到`PyCode_NewWithPosOnlyArgs()`。字节码优化过程的实现位于`Python/peephole.c`文件中。优化器会仔细检查字节码指令，并在某些情况下将其替换为其他指令。例如，有一个名为`constant unfolding`的优化程序,会对`a=2+3`这种语句直接优化成`a=5`。
+>4.字节码优化。字节码在发送到`PyCode_Optimize()`之前先发送到`PyCode_NewWithPosOnlyArgs()`。字节码优化过程的实现位于`Python/peephole.c`文件中。优化器会仔细检查字节码指令，并在某些情况下将其替换为其他指令。例如，有一个名为`constant unfolding`的优化程序,会对`a=2+3`这种语句直接优化成`a=5`。  
+
 最后让我们简单的查看下python字节码的具体形式。我们先以下面程序为例子查看他的字节码。
 ```
 def example(a):
