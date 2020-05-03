@@ -15,6 +15,8 @@ CPython是Python的**官方**实现，使用C编写的，我们一般所运行�
 
 除此之外还有其他实现比如PyPy（Python实现的Python），Cyhton（可简单的认为就是给Python加上了静态类型，会直接编译为二进制程序，性能较Python会有很大提升），Jython（Java实现的Python）。
 
+该文档所选代码版本为 Python 3.8.0, 运行环境为Ubuntu。
+
 ## 整体运行流程
 
 一共有五种方式可以运行Python，分别如下：
@@ -30,6 +32,41 @@ CPython是Python的**官方**实现，使用C编写的，我们一般所运行�
 ![Python run swim lane diagram](assets/swim-lanes-chart-1.9fb3000aad85.png)
 
 ## 初始配置 
+
+> 问题：
+>
+> **多参考3.8.0文档，源码剖析仅为参考，部分代码已经很不相同**
+>
+> 1. 小标题较为混乱，可一考虑pymain_init中进行的几个最重要的操作作为小标题：
+>    1. _PyRuntime_Initialize（运行环境初始化）：包括线程初始化，内存分配器初始化等，可以把这些内容移到这个小目录下
+>    2. PyPreConfig_InitPythonConfig（PyPreConfig初始化）
+>    3. PyConfig_InitPythonConfig（PyConfig初始化）
+>    4. Py_InitializeFromConfig（这个我也没仔细看）
+>
+> 2. PyPreConfig，PyConfig的区别和功能要介绍一下，以及他俩共同起的作用，比如
+>
+>    > [`PyPreConfig_InitPythonConfig()`](#c.PyPreConfig_InitPythonConfig) and [`PyConfig_InitPythonConfig()`](#c.PyConfig_InitPythonConfig) functions create a configuration to build a customized Python which behaves as the regular Python.
+>    >
+>    > Environments variables and command line arguments are used to configure Python, whereas global configuration variables are ignored.
+>
+> 3. 部分函数调用与实际运行流程不符合
+>
+>    1. > python在运行时，首先进入位于`Programs/python.c`中的函数wmain 
+>
+>       只有在windows下运行擦灰进入这个函数。
+>
+>    2. > Py_Initialize开始，
+>       > 在这个函数中，调用了Py_InitializeEx函数
+>       >
+>       > 
+>       >
+>       > 在Py_InitializeEx的开始处，Python会调用`Python/pystate.c`中的..
+>
+>       Py_Initialize函数中不会调用Py_InitializeEx
+>
+> 4. 可以在这一部分先简单介绍下python的线程和进程，就不用再详细介绍和贴图了，然后做一个链接跳转到我写的那一部分，
+>
+> 5. 我们以运行文件的流程为主介绍，在后面的举例以文件的为主（不强求）
 
 ### init config
 在执行任何Python代码之前，首先要建立基础的配置。
@@ -245,6 +282,7 @@ Python启动之后，其初始化从于`Modules/main.c`的函数pymain_init开�
 ![Python_run_env](assets/python_run_env.png)
 Python中，实现的这个虚拟机可以看作是对CPU的抽象，Python在的所有线程都在这个模拟CPU下完成工作。
 其中有两个关键的数据结构，其声明位于`Include/pystate.h`：
+
 - PyInterpreterState：对进程进行模拟；
 ```
 typedef struct _is {
@@ -305,6 +343,7 @@ Py_InitializeEx(int install_sigs)
 
 在Py_InitializeEx的开始处，Python会调用`Python/pystate.c`中的
 函数_PyRuntimeState_Init_impl，对虚拟机进行初始化，包括为其分配空间、初始化进程、为进程初始化线程等。
+
 ```
 static PyStatus
 _PyRuntimeState_Init_impl(_PyRuntimeState *runtime)
@@ -1931,5 +1970,6 @@ Python中5种模块类型之一的容器结构，是AST的实例，包含有：
 
 - [cpython-source-code-guide](cpython-source-code-guide)
 
-- [Python源码剖析](https://read.douban.com/reader/ebook/1499455/)
+- [《Python源码剖析》](https://read.douban.com/reader/ebook/1499455/)
 
+- [Python 3.8 官方文档](https://docs.python.org/3.8/c-api/index.html)
