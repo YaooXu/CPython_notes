@@ -31,7 +31,7 @@ CPython是Python的**官方**实现，使用C编写的，我们一般所运行�
 
 ## 初始配置 
 
-### init
+### init config
 在执行任何Python代码之前，首先要建立基础的配置。
 运行时的配置是在`Include/cpython/initconfig.h`中定义的数据结构PyConfig，其部分结构如下：
 
@@ -208,6 +208,599 @@ config_parse_cmdline(PyConfig *config, PyWideStringList *warnoptions,
     return _PyStatus_OK();
 }
 ```
+### 运行环境初始化
+这里我们介绍python应用程序被执行时，是如何一步一步开始执行程序、导入初始配置config
+、建立解释器的进程和线程、维护多进程多线程，以及最终启动python字节码虚拟机，开始执行字节码指令的过程。
+
+python在运行时，首先进入位于`Programs/python.c`中的函数wmain，然后进入位于`Modules/main.c`的函数Py_Main中，再进入函数pymain_main中
+```
+static int
+pymain_main(_PyArgv *args)
+{
+    PyStatus status = pymain_init(args);
+    if (_PyStatus_IS_EXIT(status)) {
+        pymain_free();
+        return status.exitcode;
+    }
+    if (_PyStatus_EXCEPTION(status)) {
+        pymain_exit_error(status);
+    }
+
+    return Py_RunMain();
+}
+```
+其中pymain_init函数用于运行环境的初始化工作。
+
+下面解释Python在启动之初进行的工作，即Python运行环境的初始化：
+Python启动之后，其初始化从于`Modules/main.c`的函数pymain_init开始，之后进入位于`/Python/pylifecycle.c`的函数Py_Initialize开始，
+在这个函数中，调用了Py_InitializeEx函数，其作用包括启动基本进程和线程、系统module初始化，
+以及其他部分init工作。
+
+下面详细介绍初始化线程环境和系统module初始化这两个部分：
+
+#### 初始化线程环境
+在初始化线性环境之前，我们先介绍Python的运行模型，即线程模型。
+
+在虚拟器运行的任意时刻，Python运行的整体环境如下：
+![Python_run_env](assets/python_run_env.png)
+Python中，实现的这个虚拟机可以看作是对CPU的抽象，Python在的所有线程都在这个模拟CPU下完成工作。
+其中有两个关键的数据结构，其声明位于`Include/pystate.h`：
+- PyInterpreterState：对进程进行模拟；
+```
+typedef struct _is {
+    struct _is *next;
+    struct _ts *tstate_head;
+
+    PyObject *modules;
+    PyObject *sysdict;
+    PyObject *builtins;
+    ……
+} PyInterpreterState;
+```
+其中的`struct _ts *tstate_head;`模拟了进程环境中的线程集合。
+- PyThreadState：对线程进行模拟。
+```
+typedef struct _ts {
+    struct _ts *next;
+    PyInterpreterState *interp;
+    struct _frame *frame; 
+    int recursion_depth;
+    ……
+    PyObject *dict;
+    ……
+    long thread_id;
+} PyThreadState;
+```
+其中的`struct _frame *frame;`模拟了线程中的函数调用堆栈，对应的是PyFrameObject(_frame)对象。
+在每个PyThreadState对象中，会维护一个栈帧的列表，以与PyThreadState对象的线程中的函数调用机制对应。
+
+在Python虚拟机初始化时，执行位于`/Python/pylifecycle.c`的函数Py_Initialize，该函数进而调用Py_InitializeEx函数：
+```
+void
+Py_InitializeEx(int install_sigs)
+{
+    PyStatus status;
+
+    status = _PyRuntime_Initialize();
+    if (_PyStatus_EXCEPTION(status)) {
+        Py_ExitStatusException(status);
+    }
+    _PyRuntimeState *runtime = &_PyRuntime;
+
+    if (runtime->initialized) {
+        /* bpo-33932: Calling Py_Initialize() twice does nothing. */
+        return;
+    }
+
+    PyConfig config;
+    _PyConfig_InitCompatConfig(&config);
+    config.install_signal_handlers = install_sigs;
+
+    status = Py_InitializeFromConfig(&config);
+    if (_PyStatus_EXCEPTION(status)) {
+        Py_ExitStatusException(status);
+    }
+}
+```
+
+在Py_InitializeEx的开始处，Python会调用`Python/pystate.c`中的
+函数_PyRuntimeState_Init_impl，对虚拟机进行初始化，包括为其分配空间、初始化进程、为进程初始化线程等。
+```
+static PyStatus
+_PyRuntimeState_Init_impl(_PyRuntimeState *runtime)
+{
+    ……
+    memset(runtime, 0, sizeof(*runtime));
+    PyPreConfig_InitPythonConfig(&runtime->preconfig);
+    runtime->gilstate.check_enabled = 1;
+    runtime->gilstate.autoTSSkey = initial;
+
+    runtime->interpreters.mutex = PyThread_allocate_lock();
+    if (runtime->interpreters.mutex == NULL) {
+        return _PyStatus_ERR("Can't initialize threads for interpreter");
+    }
+    runtime->interpreters.next_id = -1;
+    ……
+    return _PyStatus_OK();
+}
+```
+然后在Py_InitializeEx在执行语句`status = Py_InitializeFromConfig(&config);`时，从config中读取配置信息，
+```
+PyStatus
+Py_InitializeFromConfig(const PyConfig *config)
+{
+    ……
+    PyStatus status;
+    status = _PyRuntime_Initialize();
+    if (_PyStatus_EXCEPTION(status)) {
+        return status;
+    }
+    _PyRuntimeState *runtime = &_PyRuntime;
+    PyInterpreterState *interp = NULL;
+    status = pyinit_core(runtime, config, &interp);
+    config = &interp->config;
+    ……
+    return _PyStatus_OK();
+}
+
+```
+该函数调用函数pyinit_core，包括读取config等工作：
+```
+static PyStatus
+pyinit_core(_PyRuntimeState *runtime,
+            const PyConfig *src_config,
+            PyInterpreterState **interp_p)
+{
+    ……
+    status = PyConfig_Read(&config);
+    if (!runtime->core_initialized) {
+        status = pyinit_config(runtime, interp_p, &config);
+    }
+    ……
+    return status;
+}
+```
+其中调用函数pyinit_config:
+```
+static PyStatus
+pyinit_config(_PyRuntimeState *runtime,
+              PyInterpreterState **interp_p,
+              const PyConfig *config)
+{
+    PyInterpreterState *interp;
+    _PyConfig_Write(config, runtime);
+    PyStatus status = pycore_init_runtime(runtime, config);
+    status = pycore_create_interpreter(runtime, config, &interp);
+    ……
+    status = pycore_init_builtins(interp);
+    ……
+    /* Only when we get here is the runtime core fully initialized */
+    runtime->core_initialized = 1;
+    return _PyStatus_OK();
+}
+```
+其中调用函数pycore_create_interpreter，
+```
+static PyStatus
+pycore_create_interpreter(_PyRuntimeState *runtime,
+                          const PyConfig *config,
+                          PyInterpreterState **interp_p)
+{
+    PyInterpreterState *interp = PyInterpreterState_New();
+    ……
+    config = &interp->config;
+    PyThreadState *tstate = PyThreadState_New(interp);
+    ……
+    /* Create the GIL */
+    PyEval_InitThreads();
+    return _PyStatus_OK();
+}
+```
+
+函数pycore_create_interpreter中调用PyInterpreterState_New函数，
+创建一个新的PyInterpreterState对象，作为Python解释器的原始进程。该函数位于`Python/pystate.c`中：
+```
+static PyInterpreterState *interp_head = NULL;
+
+PyInterpreterState* PyInterpreterState_New(void)
+{
+    PyInterpreterState *interp = malloc(sizeof(PyInterpreterState));
+    if (interp != NULL) {
+        HEAD_INIT();
+        interp->modules = NULL;
+        ……
+        HEAD_LOCK();
+        interp->next = interp_head;
+        interp_head = interp;
+        HEAD_UNLOCK();
+    }
+    return interp;
+}
+
+```
+
+在Python的运行时环境中，有一个全局的管理PyInterpreterState对象链表的指针：interp_head。Python
+虚拟机运行过程中，所有的PyInterpreterState对象通过next指针形成一个链表结构，其表头即为interp_head。
+
+
+在初始化进程对象之后，pycore_create_interpreter函数为该进程初始化一个线程对象，调用PyThreadState_New函数：
+```
+PyThreadState* PyThreadState_New(PyInterpreterState *interp)
+{
+    PyThreadState *tstate = (PyThreadState *)malloc(sizeof(PyThreadState));
+    if (_PyThreadState_GetFrame == NULL)
+        _PyThreadState_GetFrame = threadstate_getframe;
+
+    if (tstate != NULL) {
+        tstate->interp = interp;
+        tstate->frame = NULL;
+        tstate->thread_id = PyThread_get_thread_ident();
+        ……
+        HEAD_LOCK();
+        tstate->next = interp->tstate_head;
+        interp->tstate_head = tstate;
+        HEAD_UNLOCK();
+    }
+    return tstate;
+}
+
+```
+该函数的作用是为线程申请内存，创建PyThread- State对象，并对其中各个域进行初始化操作。
+其中的
+- _PyThreadState_GetFrame设置用于获得线程中函数调用栈的操作
+- tstate->interp用于在PyThreadState对象中关联PyInterpreterState对象
+- tstate->next用于在PyInterpreterState对象中关联PyThreadState对象。
+
+此外，在PyThreadState结构体中，也存在一个next指针，用于维护PyThreadState对象列表，为Python实现多线程提供基础。
+
+将Python的进程对象与线程对象联系起来，这样就得到了虚拟机初始化后的进程与线程关系，如下图所示：
+![Python初始化进程环境](assets/python_Interpreter_and_Thread.png)
+
+#### 系统module对象初始化
+系统的module是指在Python虚拟机创建之初，系统内部初始化的一部分对象，例如：dir对象、list对象，以及一系列sys对象。
+这些对象存在于Python虚拟机初始化时创建的一个名字空间，其创建的详细过程如下：
+
+在上面的函数`pyinit_config`中，当Python通过`pycore_create_interpreter`函数创建了PyInterpreterState和PyThreadState对象之后，
+就会调用`pycore_init_builtins`函数对builtin进行设置，然后系统调用`Python/bltinmodule.c`中的函数`_PyBuiltin_Init`
+来进一步设置系统的__builtin__ module，函数部分内容如下：
+```
+PyObject* _PyBuiltin_Init(void)
+{
+    PyObject *mod, *dict, *debug;
+    mod = _PyModule_CreateInitialized(&builtinsmodule, PYTHON_API_VERSION);
+    if (mod == NULL)
+        return NULL;
+    dict = PyModule_GetDict(mod);
+#define SETBUILTIN(NAME, OBJECT) \
+    if (PyDict_SetItemString(dict, NAME, (PyObject *)OBJECT) < 0)   \
+        return NULL;
+
+    SETBUILTIN("None",      Py_None);
+    ……
+    SETBUILTIN("dict",      &PyDict_Type);
+    ……
+    SETBUILTIN("int",       &PyInt_Type);
+    SETBUILTIN("list",      &PyList_Type);
+    ……
+    return mod;
+#undef SETBUILTIN
+}
+
+```
+其中：
+- mod =  _PyModule_CreateInitialized(……)：创建PyModuleObject对象，在Python中，module正是通过这个对象来实现的；
+- dict = PyModule_GetDict(mod)：设置module，将Python中所有的类型对象全部加载到新创建的__builtin__ module中。
+
+下面详细解释一下PyModuleObject对象对象创建的过程，主要由位于`Objects/moduleobject.c`的函数_PyModule_CreateInitialized完成：
+```
+PyObject *
+_PyModule_CreateInitialized(struct PyModuleDef* module, int module_api_version)
+{
+    const char* name;
+    PyModuleObject *m;
+    ……
+    name = _Py_PackageContext;
+    if ((m = (PyModuleObject*)PyModule_New(name)) == NULL)
+        return NULL;
+
+    if (module->m_size > 0) {
+        m->md_state = PyMem_MALLOC(module->m_size);
+        if (!m->md_state) {
+            PyErr_NoMemory();
+            Py_DECREF(m);
+            return NULL;
+        }
+        memset(m->md_state, 0, module->m_size);
+    }
+
+    if (module->m_methods != NULL) {
+        if (PyModule_AddFunctions((PyObject *) m, module->m_methods) != 0) {
+            Py_DECREF(m);
+            return NULL;
+        }
+    }
+    if (module->m_doc != NULL) {
+        if (PyModule_SetDocString((PyObject *) m, module->m_doc) != 0) {
+            Py_DECREF(m);
+            return NULL;
+        }
+    }
+    m->md_def = module;
+    return (PyObject*)m;
+}
+```
+一个完整的python module如下图所示：
+![python_module](assets/python_module.png)
+
+module创建过程中主要分为4个步骤：
+- 创建module对象：
+
+这一步骤通过调用PyModule_New函数进行系统module的创建，其中的_Py_PackageContext是导入package内的全部完整module name：
+```
+PyObject *
+PyModule_New(const char *name)
+{
+    PyObject *nameobj, *module;
+    nameobj = PyUnicode_FromString(name);
+    if (nameobj == NULL)
+        return NULL;
+    module = PyModule_NewObject(nameobj);
+    Py_DECREF(nameobj);
+    return module;
+}
+```
+
+- 为创建的module对象分配空间：
+
+该步骤根据新创建的module的size，申请内存空间。通过以下代码完成：
+```
+ if (module->m_size > 0) {
+        m->md_state = PyMem_MALLOC(module->m_size);
+        if (!m->md_state) {
+            PyErr_NoMemory();
+            Py_DECREF(m);
+            return NULL;
+        }
+        memset(m->md_state, 0, module->m_size);
+    }
+```
+
+- 为新创建的module对象添加对应的方法：
+
+该步骤对应的调用的函数是PyModule_AddFunctions：
+```
+int
+PyModule_AddFunctions(PyObject *m, PyMethodDef *functions)
+{
+    int res;
+    PyObject *name = PyModule_GetNameObject(m);
+    if (name == NULL) {
+        return -1;
+    }
+
+    res = _add_methods_to_object(m, name, functions);
+    Py_DECREF(name);
+    return res;
+}
+```
+其中参数PyMethodDef *functions由调用过程中传递的module->m_methods确定。
+
+- 将新创建的module对象添加到Python的全局module集合中：
+
+该步骤的实现是通过调用函数PyModule_SetDocString实现的：
+```
+int
+PyModule_SetDocString(PyObject *m, const char *doc)
+{
+    PyObject *v;
+    _Py_IDENTIFIER(__doc__);
+
+    v = PyUnicode_FromString(doc);
+    if (v == NULL || _PyObject_SetAttrId(m, &PyId___doc__, v) != 0) {
+        Py_XDECREF(v);
+        return -1;
+    }
+    Py_DECREF(v);
+    return 0;
+}
+
+```
+
+建立python虚拟机内置的完整__builtin__ module，如下图：
+![python_builtin_module](assets/python_builtin_module.png)
+
+python虚拟机在初始化时，除了要初始化__builtin__ module对象之外，还要初始化sys module，其创建过程类似__builtin__ module，
+由函数`pyinit_config`调用位于`Python/sysmodule.c`中的函数_PySys_Create完成：
+```
+PyStatus
+_PySys_Create(_PyRuntimeState *runtime, PyInterpreterState *interp,
+              PyObject **sysmod_p)
+{
+    PyObject *modules = PyDict_New();
+    interp->modules = modules;
+
+    PyObject *sysmod = _PyModule_CreateInitialized(&sysmodule, PYTHON_API_VERSION);
+
+    PyObject *sysdict = PyModule_GetDict(sysmod);
+
+    Py_INCREF(sysdict);
+    interp->sysdict = sysdict;
+
+    if (PyDict_SetItemString(sysdict, "modules", interp->modules) < 0) {
+        return _PyStatus_ERR("can't initialize sys module");
+    }
+
+    PyStatus status = _PySys_SetPreliminaryStderr(sysdict);
+    if (_PyStatus_EXCEPTION(status)) {
+        return status;
+    }
+
+    status = _PySys_InitCore(runtime, interp, sysdict);
+    ……
+
+    *sysmod_p = sysmod;
+    return _PyStatus_OK();
+}
+```
+其核心为调用函数`_PyModule_CreateInitialized(&sysmodule, PYTHON_API_VERSION)`创建对应的sys module。其中，
+Python的module集合interp->modules是一个PyDictObject对象，用于维护(module name, PyModuleObject)元素。
+创建完__builtin__ module和sys module之后，PyInterpreterState对象和PyThreadState对象在内存中的情形如图所示：
+![python_sys_module](assets/sys_module.png)
+然后再进行一些其他的初始化操作，包括：设置module搜索路、设置site-specific的module的搜索路径等，用于设置sys路径、引用第三方库等工作。
+
+在完成Python中基本的初始化工作之后，我们得到如下初始化环境：
+![python_sys_module](assets/python_creating_env.png)
+
+#### 激活Python虚拟机
+完成上述的python进程线程初始化和module初始化之后，我们还需要对虚拟机进行激活，进入到字节码虚拟机之后，才完成真正的初始化工作。
+
+在位于`Modules/main.c`的函数Py_Main的初始化工作pymain_init完成之后，进入函数Py_RunMain，然后调用函数pymain_run_python，
+根据输入的参数启动虚拟机：
+```
+static void
+pymain_run_python(int *exitcode)
+{
+    PyInterpreterState *interp = _PyInterpreterState_GET_UNSAFE();
+    PyConfig *config = &interp->config;
+   ……
+    if (config->run_command) {
+        *exitcode = pymain_run_command(config->run_command, &cf);
+    }
+    else if (config->run_module) {
+        *exitcode = pymain_run_module(config->run_module, 1);
+    }
+    else if (main_importer_path != NULL) {
+        *exitcode = pymain_run_module(L"__main__", 0);
+    }
+    else if (config->run_filename != NULL) {
+        *exitcode = pymain_run_file(config, &cf);
+    }
+    else {
+        *exitcode = pymain_run_stdin(config, &cf);
+    }
+    ……
+    Py_XDECREF(main_importer_path);
+}
+```
+以命令行启动为例：
+程序进入函数pymain_run_command中：
+```
+static int
+pymain_run_command(wchar_t *command, PyCompilerFlags *cf)
+{
+    PyObject *unicode, *bytes;
+    int ret;
+    unicode = PyUnicode_FromWideChar(command, -1);
+    ……
+    bytes = PyUnicode_AsUTF8String(unicode);
+    ret = PyRun_SimpleStringFlags(PyBytes_AsString(bytes), cf);
+    ……
+
+    return pymain_exit_err_print();
+}
+
+```
+调用PyRun_SimpleStringFlags，然后进一步调研函数PyRun_StringFlags：
+```
+PyObject *
+PyRun_StringFlags(const char *str, int start, PyObject *globals,
+                  PyObject *locals, PyCompilerFlags *flags)
+{
+    PyObject *ret = NULL;
+    mod_ty mod;
+    PyArena *arena;
+    PyObject *filename;
+
+    filename = _PyUnicode_FromId(&PyId_string); /* borrowed */
+    if (filename == NULL)
+        return NULL;
+
+    arena = PyArena_New();
+    if (arena == NULL)
+        return NULL;
+
+    mod = PyParser_ASTFromStringObject(str, filename, start, flags, arena);
+    if (mod != NULL)
+        ret = run_mod(mod, filename, globals, locals, flags, arena);
+    PyArena_Free(arena);
+    return ret;
+}
+```
+其中：
+- arena = PyArena_New()：读取用户在命令行的输入
+- mod = PyParser_ASTFromStringObject(……)：对用户在交互式环境下输入的Python语句进行编译，构造与Python语句对应的抽象语法树（AST）
+- run_mode：在run_mode中，将最终完成对用户输入语句的执行动作
+- 输入参数：作为Python虚拟机开始执行时当前活动的frame对象的local名字空间和global名字空间
+
+在run_mode函数中：
+```
+static PyObject *
+run_mod(mod_ty mod, PyObject *filename, PyObject *globals, PyObject *locals,
+            PyCompilerFlags *flags, PyArena *arena)
+{
+    PyCodeObject *co;
+    PyObject *v;
+    co = PyAST_CompileObject(mod, filename, flags, -1, arena);
+    if (co == NULL)
+        return NULL;
+
+    if (PySys_Audit("exec", "O", co) < 0) {
+        Py_DECREF(co);
+        return NULL;
+    }
+
+    v = run_eval_code_obj(co, globals, locals);
+    Py_DECREF(co);
+    return v;
+}
+```
+- co：基于AST编译字节码指令序列，创建PyCodeObject对象
+- v：创建PyFrameObject对象，执行PyCodeObject对象中的字节码指令序列
+
+程序通过函数run_eval_code_obj再调用函数PyEval_EvalCode中的函数PyEval_EvalCodeEx，用于激活字节码虚拟机：
+```
+PyObject *
+PyEval_EvalCodeEx(……)
+{
+    return _PyEval_EvalCodeWithName(……);
+}
+```
+在函数_PyEval_EvalCodeWithName中：
+```
+
+PyObject *
+_PyEval_EvalCodeWithName(PyObject *_co, PyObject *globals, PyObject *locals,
+           PyObject *const *args, Py_ssize_t argcount,
+           PyObject *const *kwnames, PyObject *const *kwargs,
+           Py_ssize_t kwcount, int kwstep,
+           PyObject *const *defs, Py_ssize_t defcount,
+           PyObject *kwdefs, PyObject *closure,
+           PyObject *name, PyObject *qualname)
+{
+    PyCodeObject* co = (PyCodeObject*)_co;
+    PyFrameObject *f;
+    PyObject *retval = NULL;
+    PyObject **fastlocals, **freevars;
+    PyObject *x, *u;
+    const Py_ssize_t total_args = co->co_argcount + co->co_kwonlyargcount;
+    Py_ssize_t i, j, n;
+    PyObject *kwdict;
+    ……
+    f = PyFrame_New(tstate, co, globals, locals);
+    ……
+    fastlocals = f->f_localsplus;
+    ……
+    retval = PyEval_EvalFrameEx(f, 0);
+    return retval;
+}
+```
+以上为以命令行形式启动python字节码虚拟机的过程，当输入参数为filename.py时，其执行过程也类似
+命令行启动，区别在于命令行是从解释器终端一行一行读取用户输入，而文件执行模式是读取用户
+指定的filename.py中的内容，最终都进入到run_mode函数中，对输入内容进行执行。
+
+至此，python的字节码虚拟机已经被创建且激活，之后便可以循环往复地执行python字节码，完成对python的解释执行工作。
+
+
 
 ## python的编译过程
 在编译原理中我们学习到对于一种语言的编译，往往有词法分析，语法分析，语义处理，中间代码生成，代码优化，代码生成这几个阶段。
