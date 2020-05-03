@@ -269,9 +269,37 @@ pymain_main(_PyArgv *args)
 其中pymain_init函数用于运行环境的初始化工作。
 
 下面解释Python在启动之初进行的工作，即Python运行环境的初始化：
-Python启动之后，其初始化从于`Modules/main.c`的函数pymain_init开始，之后进入位于`/Python/pylifecycle.c`的函数Py_Initialize开始，
-在这个函数中，调用了Py_InitializeEx函数，其作用包括启动基本进程和线程、系统module初始化，
-以及其他部分init工作。
+Python启动之后，其初始化从于`Modules/main.c`的函数pymain_init开始：
+```
+static PyStatus
+pymain_init(const _PyArgv *args)
+{
+    PyStatus status;
+    status = _PyRuntime_Initialize();
+    ……
+    PyPreConfig preconfig;
+    PyPreConfig_InitPythonConfig(&preconfig);
+    status = _Py_PreInitializeFromPyArgv(&preconfig, args);
+
+    PyConfig config;
+    status = PyConfig_InitPythonConfig(&config);
+    if (_PyStatus_EXCEPTION(status)) {
+        goto done;
+    }
+    ……
+    status = Py_InitializeFromConfig(&config);
+    if (_PyStatus_EXCEPTION(status)) {
+        goto done;
+    }
+    status = _PyStatus_OK();
+
+done:
+    PyConfig_Clear(&config);
+    return status;
+}
+```
+
+进行python运行环境的初始化，其作用包括启动基本进程和线程、系统module初始化，以及其他部分init工作。
 
 下面详细介绍初始化线程环境和系统module初始化这两个部分：
 
@@ -312,37 +340,9 @@ typedef struct _ts {
 其中的`struct _frame *frame;`模拟了线程中的函数调用堆栈，对应的是PyFrameObject(_frame)对象。
 在每个PyThreadState对象中，会维护一个栈帧的列表，以与PyThreadState对象的线程中的函数调用机制对应。
 
-在Python虚拟机初始化时，执行位于`/Python/pylifecycle.c`的函数Py_Initialize，该函数进而调用Py_InitializeEx函数：
-```
-void
-Py_InitializeEx(int install_sigs)
-{
-    PyStatus status;
-
-    status = _PyRuntime_Initialize();
-    if (_PyStatus_EXCEPTION(status)) {
-        Py_ExitStatusException(status);
-    }
-    _PyRuntimeState *runtime = &_PyRuntime;
-
-    if (runtime->initialized) {
-        /* bpo-33932: Calling Py_Initialize() twice does nothing. */
-        return;
-    }
-
-    PyConfig config;
-    _PyConfig_InitCompatConfig(&config);
-    config.install_signal_handlers = install_sigs;
-
-    status = Py_InitializeFromConfig(&config);
-    if (_PyStatus_EXCEPTION(status)) {
-        Py_ExitStatusException(status);
-    }
-}
-```
-
-在Py_InitializeEx的开始处，Python会调用`Python/pystate.c`中的
-函数_PyRuntimeState_Init_impl，对虚拟机进行初始化，包括为其分配空间、初始化进程、为进程初始化线程等。
+在上述所说的pymain_init函数中，调用位于`/Python/pylifecycle.c`的函数_PyRuntime_Initialize，
+再进入_PyRuntimeState_Init函数，从而调用位于`Python/pystate.c`中的函数_PyRuntimeState_Init_impl，
+对虚拟机进行部分初始化工作，包括为其运行环境分配空间等。
 
 ```
 static PyStatus
@@ -363,7 +363,10 @@ _PyRuntimeState_Init_impl(_PyRuntimeState *runtime)
     return _PyStatus_OK();
 }
 ```
-然后在Py_InitializeEx在执行语句`status = Py_InitializeFromConfig(&config);`时，从config中读取配置信息，
+
+在上述操作完成之后，`Modules/main.c`的函数pymain_init继续执行。
+在执行语句`status = Py_InitializeFromConfig(&config)`时，完成关键的初始化操作，
+包括从config中读取配置信息、进程初始化、线程初始化，以及系统module初始化等操作。
 ```
 PyStatus
 Py_InitializeFromConfig(const PyConfig *config)
@@ -499,7 +502,7 @@ PyThreadState* PyThreadState_New(PyInterpreterState *interp)
 系统的module是指在Python虚拟机创建之初，系统内部初始化的一部分对象，例如：dir对象、list对象，以及一系列sys对象。
 这些对象存在于Python虚拟机初始化时创建的一个名字空间，其创建的详细过程如下：
 
-在上面的函数`pyinit_config`中，当Python通过`pycore_create_interpreter`函数创建了PyInterpreterState和PyThreadState对象之后，
+在上述初始化过程的函数`pyinit_config`中，当Python通过`pycore_create_interpreter`函数创建了PyInterpreterState和PyThreadState对象之后，
 就会调用`pycore_init_builtins`函数对builtin进行设置，然后系统调用`Python/bltinmodule.c`中的函数`_PyBuiltin_Init`
 来进一步设置系统的__builtin__ module，函数部分内容如下：
 ```
