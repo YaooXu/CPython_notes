@@ -951,13 +951,13 @@ tokenize(readline)是一个生成器，它将一个字节流分解为Python的to
         raise
 ```
 
-### Grammer
+### Grammar
 
 Python 的语法文件使用具有正则表达式语法的 Extended-BNF（EBNF）规范。
 
 Cpython所支持的Grammar和Token具体内容位于的Grammar文件夹下的两个文件中。
 
-其中，Grammer/Grammar部分内容如下：
+其中，Grammar/Grammar部分内容如下：
 ```
 stmt: simple_stmt | compound_stmt
 simple_stmt: small_stmt (';' small_stmt)* [';'] NEWLINE
@@ -1040,7 +1040,10 @@ pgen工具将语法文件`Grammar/Grammar`使用的`Extended-BNF（EBNF）`语�
 然后重新编译CPython，即完成具有新的语法的python解释器，此时`proceed`也会作为python的关键词，效果同`pass`一致。  
 
 ### 词法分析(Lexing)
-词法分析的主要部分在`Parser/tokenizer.c`文件中，使用`PyTokenizer_FromFile()`实例化标记化器状态`tok_state`结构体,然后使用`tok_get()`函数在DFA的不同状态中转化并获得最终tokens。这与我们编译原理中学习的内容类似，我们以一个识别`DOT`部分为例  
+CPython 源代码中有两个词法分析器：一个用 Python 编写，另一个是用 C 语言编写的。它们具有相同的输出和行为。
+用 C 语言编写的版本是为性能而设计的，Python 中的模块是为调试而设计的。这里我们简单的看看C编写的词法分析器。
+
+该词法分析器的主要部分在`Parser/tokenizer.c`文件中，使用`PyTokenizer_FromFile()`实例化标记化器状态`tok_state`结构体,然后使用`tok_get()`函数在DFA的不同状态中转化并获得最终tokens。这与我们编译原理中学习的内容类似，我们以一个识别`DOT`部分为例  
 ```
 static int
 tok_get(struct tok_state *tok, char **p_start, char **p_end)
@@ -1289,7 +1292,7 @@ pprint(lex('a + 1'))
  ['NEWLINE', ''],
  ['ENDMARKER', '']]
 ```
-### 中间代码(字节码)生成
+
 #### 将CST转化为AST 
 将CST转化为AST的核心代码位于`Python/ast.c`中，其中`PyAST_FromNode()`函数负责从CST到AST的转换。  
 在上面我们已经介绍了Python解释器进程以`node * tree`的格式创建了一个CST。然后跳转到`Python/ast.c`中的`PyAST_FromNodeObject()`，你可以看到它接收`node * tree`，`文件名`，`compiler flags`和`PyArena`，此函数的返回类型是定义在文件`Include/Python-ast.h`的`mod_ty`类型。  
@@ -1462,7 +1465,7 @@ instaviz.show(add)
 这样我们就能通过浏览器访问8080端口查看该函数的ast可视化结果了，访问`http://localhost:8080/`  
 ![效果图](assets/Snipaste_2020-04-30_21-46-53.jpg)  
 选择抽象语法树中的某个节点就能在左边看到他的json格式语法树。 
-
+### 中间代码(字节码)生成
 
 #### 将AST转化为字节码
 在得到python程序的AST后，编译生成中间代码字节码的最后一步就是要将AST转化为字节码。这一步的主要过程发生在`Python/complie.c`中，在`PyAST_Compile()`函数中进行抽象语法树到字节码的转化。而这个过程分为以下几步：  
