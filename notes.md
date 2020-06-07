@@ -33,7 +33,7 @@ CPython是Python的**官方**实现，使用C编写的，我们一般所运行�
 
 ## 初始配置 
 
-> 问题：
+> 待修改内容：
 >
 > **多参考3.8.0文档，源码剖析仅为参考，部分代码已经很不相同**
 >
@@ -41,7 +41,7 @@ CPython是Python的**官方**实现，使用C编写的，我们一般所运行�
 >    1. _PyRuntime_Initialize（运行环境初始化）：包括线程初始化，内存分配器初始化等，可以把这些内容移到这个小目录下
 >    2. PyPreConfig_InitPythonConfig（PyPreConfig初始化）
 >    3. PyConfig_InitPythonConfig（PyConfig初始化）
->    4. Py_InitializeFromConfig（这个我也没仔细看）
+>    4. Py_InitializeFromConfig（根据config初始化，包括）
 >
 > 2. PyPreConfig，PyConfig的区别和功能要介绍一下，以及他俩共同起的作用，比如
 >
@@ -51,22 +51,28 @@ CPython是Python的**官方**实现，使用C编写的，我们一般所运行�
 >
 > 3. 部分函数调用与实际运行流程不符合
 >
->    1. > python在运行时，首先进入位于`Programs/python.c`中的函数wmain 
->
->       只有在windows下运行擦灰进入这个函数。
->
->    2. > Py_Initialize开始，
->       > 在这个函数中，调用了Py_InitializeEx函数
->       >
->       > 
->       >
->       > 在Py_InitializeEx的开始处，Python会调用`Python/pystate.c`中的..
->
->       Py_Initialize函数中不会调用Py_InitializeEx
->
-> 4. 可以在这一部分先简单介绍下python的线程和进程，就不用再详细介绍和贴图了，然后做一个链接跳转到我写的那一部分，
->
-> 5. 我们以运行文件的流程为主介绍，在后面的举例以文件的为主（不强求）
+> 
+>4. 可以在这一部分先简单介绍下python的线程和进程，就不用再详细介绍和贴图了，然后做一个链接跳转到我写的那一部分，
+>    
+>5. 我们以运行文件的流程为主介绍，在后面的举例以文件的为主（不强求）
+> 
+> 6. 目录修改建议：
+> 
+> 初始配置
+> 
+>    1. 运行环境初始化（_PyRuntime_Initialize）
+>      1. 设置默认内存分配器（_PyMem_SetDefaultAllocator）
+>          2. 运行环境状态初始化（_PyRuntimeState_Init_impl）
+>         1. 设置GC
+>          2. 设置递归深度
+>         3. 设置GIL锁
+>       3. 设置内存分配器（PyMem_SetAllocator）
+>   2. PyPreConfig初始化（PyPreConfig_InitPythonConfig）
+>       1. ...
+>   3. PyConfig初始化（PyConfig_InitPythonConfig）
+>          1. ...
+>   4. 根据config初始化Python（Py_InitializeFromConfig）
+>       1. ...
 
 ### init config
 在执行任何Python代码之前，首先要建立基础的配置。
@@ -269,9 +275,37 @@ pymain_main(_PyArgv *args)
 其中pymain_init函数用于运行环境的初始化工作。
 
 下面解释Python在启动之初进行的工作，即Python运行环境的初始化：
-Python启动之后，其初始化从于`Modules/main.c`的函数pymain_init开始，之后进入位于`/Python/pylifecycle.c`的函数Py_Initialize开始，
-在这个函数中，调用了Py_InitializeEx函数，其作用包括启动基本进程和线程、系统module初始化，
-以及其他部分init工作。
+Python启动之后，其初始化从于`Modules/main.c`的函数pymain_init开始：
+```
+static PyStatus
+pymain_init(const _PyArgv *args)
+{
+    PyStatus status;
+    status = _PyRuntime_Initialize();
+    ……
+    PyPreConfig preconfig;
+    PyPreConfig_InitPythonConfig(&preconfig);
+    status = _Py_PreInitializeFromPyArgv(&preconfig, args);
+
+    PyConfig config;
+    status = PyConfig_InitPythonConfig(&config);
+    if (_PyStatus_EXCEPTION(status)) {
+        goto done;
+    }
+    ……
+    status = Py_InitializeFromConfig(&config);
+    if (_PyStatus_EXCEPTION(status)) {
+        goto done;
+    }
+    status = _PyStatus_OK();
+
+done:
+    PyConfig_Clear(&config);
+    return status;
+}
+```
+
+进行python运行环境的初始化，其作用包括启动基本进程和线程、系统module初始化，以及其他部分init工作。
 
 下面详细介绍初始化线程环境和系统module初始化这两个部分：
 
@@ -312,37 +346,9 @@ typedef struct _ts {
 其中的`struct _frame *frame;`模拟了线程中的函数调用堆栈，对应的是PyFrameObject(_frame)对象。
 在每个PyThreadState对象中，会维护一个栈帧的列表，以与PyThreadState对象的线程中的函数调用机制对应。
 
-在Python虚拟机初始化时，执行位于`/Python/pylifecycle.c`的函数Py_Initialize，该函数进而调用Py_InitializeEx函数：
-```
-void
-Py_InitializeEx(int install_sigs)
-{
-    PyStatus status;
-
-    status = _PyRuntime_Initialize();
-    if (_PyStatus_EXCEPTION(status)) {
-        Py_ExitStatusException(status);
-    }
-    _PyRuntimeState *runtime = &_PyRuntime;
-
-    if (runtime->initialized) {
-        /* bpo-33932: Calling Py_Initialize() twice does nothing. */
-        return;
-    }
-
-    PyConfig config;
-    _PyConfig_InitCompatConfig(&config);
-    config.install_signal_handlers = install_sigs;
-
-    status = Py_InitializeFromConfig(&config);
-    if (_PyStatus_EXCEPTION(status)) {
-        Py_ExitStatusException(status);
-    }
-}
-```
-
-在Py_InitializeEx的开始处，Python会调用`Python/pystate.c`中的
-函数_PyRuntimeState_Init_impl，对虚拟机进行初始化，包括为其分配空间、初始化进程、为进程初始化线程等。
+在上述所说的pymain_init函数中，调用位于`/Python/pylifecycle.c`的函数_PyRuntime_Initialize，
+再进入_PyRuntimeState_Init函数，从而调用位于`Python/pystate.c`中的函数_PyRuntimeState_Init_impl，
+对虚拟机进行部分初始化工作，包括为其运行环境分配空间等。
 
 ```
 static PyStatus
@@ -363,7 +369,10 @@ _PyRuntimeState_Init_impl(_PyRuntimeState *runtime)
     return _PyStatus_OK();
 }
 ```
-然后在Py_InitializeEx在执行语句`status = Py_InitializeFromConfig(&config);`时，从config中读取配置信息，
+
+在上述操作完成之后，`Modules/main.c`的函数pymain_init继续执行。
+在执行语句`status = Py_InitializeFromConfig(&config)`时，完成关键的初始化操作，
+包括从config中读取配置信息、进程初始化、线程初始化，以及系统module初始化等操作。
 ```
 PyStatus
 Py_InitializeFromConfig(const PyConfig *config)
@@ -499,9 +508,10 @@ PyThreadState* PyThreadState_New(PyInterpreterState *interp)
 系统的module是指在Python虚拟机创建之初，系统内部初始化的一部分对象，例如：dir对象、list对象，以及一系列sys对象。
 这些对象存在于Python虚拟机初始化时创建的一个名字空间，其创建的详细过程如下：
 
-在上面的函数`pyinit_config`中，当Python通过`pycore_create_interpreter`函数创建了PyInterpreterState和PyThreadState对象之后，
+在上述初始化过程的函数`pyinit_config`中，当Python通过`pycore_create_interpreter`函数创建了PyInterpreterState和PyThreadState对象之后，
 就会调用`pycore_init_builtins`函数对builtin进行设置，然后系统调用`Python/bltinmodule.c`中的函数`_PyBuiltin_Init`
 来进一步设置系统的__builtin__ module，函数部分内容如下：
+
 ```
 PyObject* _PyBuiltin_Init(void)
 {
@@ -1401,6 +1411,7 @@ ast_for_power(struct compiling *c, const node *n)
 更多关于python中ast节点的东西可以参考：[python内置ast模块](https://docs.python.org/zh-cn/3.8/library/ast.html)，[ast节点详细分析](https://greentreesnakes.readthedocs.io/en/latest/index.html)  
 我们可以简单看一看最终生成的ast具体样子,在python的ast模块中有`ast.parse(source, filename='<unknown>', mode='exec', *, type_comments=False, feature_version=None)`函数能够帮我们把源码解析为AST节点。  
 以下面程序为例：  
+
 ```
 import ast
 func_def = \
@@ -1476,11 +1487,11 @@ instaviz.show(add)
 import symtable
 s = symtable.symtable('a * b + 1', filename='test.py', compile_type='eval')
 print([symbol.__dict__ for symbol in s.get_symbols()])
-```
+ ```
  输出：
 ```
 [{'_Symbol__name': 'a', '_Symbol__flags': 6160, '_Symbol__scope': 3, '_Symbol__namespaces': ()}, {'_Symbol__name': 'b', '_Symbol__flags': 6160, '_Symbol__scope': 3, '_Symbol__namespaces': ()}]
-```  
+```
 3.生成basic blocks并组装成字节码。 调用`Python/complie.c`中的`editor_mod()`生成basic blocks并调用`Python/complie.c`中的`assemble()`函数使用dfs的方法对块进行搜索并组装成字节码。  
 流程代码：  
 ```
@@ -1895,29 +1906,32 @@ struct _is {
 };
 ```
 
-
-
-
-
 ​	进程, 线程, 栈帧关系大致如下:
 
 ![1588063672226](assets/1588063672226-1588063672523.png)
 
+#### 存储组织与分配
+
+##### 内存管理架构
+
+​	CPython的内存管理采用层次化的思想，可分为五层，从高到低分别如下：
+
+- Layer 3 特定对象的内存管理
+- Layer 2 Python对象的内存管理
+- Layer 1 Python虚拟机的内存管理
+- Layer 0 操作系统提供的内存管理接口
+
+​	最底层是操作系统提供的内存管理接口，比如C语言的malloc和free等接口，这一层由操作系统控制，Python控制的是上面三层。
+
+​	TODO
+
+##### 存储组织与分配策略
+
+​	TODO
+
 
 
 TODO：
-
-表达式
-
-控制流
-
-函数机制
-
-类机制
-
-运行环境初始化
-
-模块加载机制
 
 多线程机制
 
