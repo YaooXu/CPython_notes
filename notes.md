@@ -31,50 +31,26 @@ CPython是Python的**官方**实现，使用C编写的，我们一般所运行�
 
 ![Python run swim lane diagram](assets/swim-lanes-chart-1.9fb3000aad85.png)
 
-## 初始配置 
+![Python runtime](assets/runall.png)
+上图展示了python应用程序被执行时，是如何一步一步开始执行程序、导入初始配置config 、初始化解释器和相关线程、维护多解释器多线程，以及最终启动python字节码虚拟机，开始执行字节码指令的过程。
+      
+Python应用程序被执行时，首先进入Program/python.c的main()函数，然后进入Modules/main.c的pymain_main()函数，调用pymain_init()函数。在此函数中完成初始化工作。在pymain_init()函数中，首先调用Python/pylifecycle.c中的_PyRuntime_Initialize()函数，分配runtime空间、初始化hook参数等。在位于Modules/main.c的函数Py_Main的初始化工作完成之后，进入函数Py_RunMain，然后调用函数pymain_run_python，根据输入的参数启动虚拟机，然后统一进入run_mode()函数。在run_mode中，将最终完成对用户输入语句的执行动作。程序先调用Python/compile.c中的PyAST_CompileObject()函数，完成了字节码的编译工作，创建了一个PyCodeObject对象，将其传入函数run_eval_code_obj中，激活执行Python字节码的虚拟机，开始代码的执行过程，之后只需在虚拟机中逐条执行字节码。
 
-> 待修改内容：
->
-> **多参考3.8.0文档，源码剖析仅为参考，部分代码已经很不相同**
->
-> 1. 小标题较为混乱，可一考虑pymain_init中进行的几个最重要的操作作为小标题：
->    1. _PyRuntime_Initialize（运行环境初始化）：包括线程初始化，内存分配器初始化等，可以把这些内容移到这个小目录下
->    2. PyPreConfig_InitPythonConfig（PyPreConfig初始化）
->    3. PyConfig_InitPythonConfig（PyConfig初始化）
->    4. Py_InitializeFromConfig（根据config初始化，包括）
->
-> 2. PyPreConfig，PyConfig的区别和功能要介绍一下，以及他俩共同起的作用，比如
->
->    > [`PyPreConfig_InitPythonConfig()`](#c.PyPreConfig_InitPythonConfig) and [`PyConfig_InitPythonConfig()`](#c.PyConfig_InitPythonConfig) functions create a configuration to build a customized Python which behaves as the regular Python.
->    >
->    > Environments variables and command line arguments are used to configure Python, whereas global configuration variables are ignored.
->
-> 3. 部分函数调用与实际运行流程不符合
->
-> 
->4. 可以在这一部分先简单介绍下python的线程和进程，就不用再详细介绍和贴图了，然后做一个链接跳转到我写的那一部分，
->    
->5. 我们以运行文件的流程为主介绍，在后面的举例以文件的为主（不强求）
-> 
-> 6. 目录修改建议：
-> 
-> 初始配置
-> 
->    1. 运行环境初始化（_PyRuntime_Initialize）
->      1. 设置默认内存分配器（_PyMem_SetDefaultAllocator）
->          2. 运行环境状态初始化（_PyRuntimeState_Init_impl）
->         1. 设置GC
->          2. 设置递归深度
->         3. 设置GIL锁
->       3. 设置内存分配器（PyMem_SetAllocator）
->   2. PyPreConfig初始化（PyPreConfig_InitPythonConfig）
->       1. ...
->   3. PyConfig初始化（PyConfig_InitPythonConfig）
->          1. ...
->   4. 根据config初始化Python（Py_InitializeFromConfig）
->       1. ...
+## 运行环境初始化 
+运行环境的初始化是指Python应用程序被执行时，是如何一步一步执行程序、导入初始配置、对解释器进行初始化工作、建立相关线程，以及最终启动字节码虚拟机，开始执行字节码指令的过程。本部分讲解内容主要包括以下四部分：
+- 初始化配置参数
+- 初始化解释器和相关线程
+- 初始化系统module对象
+- 激活CPython虚拟机
 
-### init config
+![Initialization process](assets/Initialization_process.png)
+在函数pymain_init()中完成初始化工作。在pymain_init()函数中，首先调用Python/pylifecycle.c中的_PyRuntime_Initialize()函数，初始化runtime，进行的工作包括初始化内存分配器、初始化runtime相关参数、初始化hook参数等。
+
+然后调用Python/pystate.c中的PyPreConfig_InitPythonConfig函数读取预初始化文件preconfig，然后调用_Py_PreInitializeFromPyArgv()函数进行预初始化，包括设置python内存分配器、配置lc类型区域设置、设置UTF-8模式等工作。
+
+之后读取初始化文件config，调用Python/pylifecycle.c中的Py_InitializeFromConfig()函数完成读取配置信息、解释器初始化、线程初始化，以及系统module初始化等操作。调用pycore_create_interpreter()函数初始化解释器和线程，调用pycore_init_types()函数初始化type，调用_PySys_Create()函数初始化sys module，调用pycore_init_builtins()函数初始化builtin module。然后再进行一些其他的初始化操作，包括：设置module搜索路、设置site-specific的module的搜索路径等，用于设置sys路径、引用第三方库等工作。此时，基本完成Python虚拟机的初始化工作。
+
+### 初始化配置参数
 在执行任何Python代码之前，首先要建立基础的配置。
 运行时的配置是在`Include/cpython/initconfig.h`中定义的数据结构PyConfig，其部分结构如下：
 
@@ -251,65 +227,14 @@ config_parse_cmdline(PyConfig *config, PyWideStringList *warnoptions,
     return _PyStatus_OK();
 }
 ```
-### 运行环境初始化
-这里我们介绍python应用程序被执行时，是如何一步一步开始执行程序、导入初始配置config
-、建立解释器的进程和线程、维护多进程多线程，以及最终启动python字节码虚拟机，开始执行字节码指令的过程。
+### 初始化解释器和相关线程
 
-python在运行时，首先进入位于`Programs/python.c`中的函数wmain，然后进入位于`Modules/main.c`的函数Py_Main中，再进入函数pymain_main中
-```
-static int
-pymain_main(_PyArgv *args)
-{
-    PyStatus status = pymain_init(args);
-    if (_PyStatus_IS_EXIT(status)) {
-        pymain_free();
-        return status.exitcode;
-    }
-    if (_PyStatus_EXCEPTION(status)) {
-        pymain_exit_error(status);
-    }
+解释器的初始化和相关线程的初始化工作是由位于Python/pylifecycle.c文件下的pycore_create_interpreter函数完成的。两个核心函数如下：
+- PyInterpreterState_New函数：创建一个PyInterpreterState对象，作为初始的Interpreter；
+- PyThreadState_New函数：为这个Interpreter初始化一个线程对象
 
-    return Py_RunMain();
-}
-```
-其中pymain_init函数用于运行环境的初始化工作。
+之后再创建GIL，即Global Interpreter Lock(全局解释器锁)，以及根据config初始化解释器的内容。
 
-下面解释Python在启动之初进行的工作，即Python运行环境的初始化：
-Python启动之后，其初始化从于`Modules/main.c`的函数pymain_init开始：
-```
-static PyStatus
-pymain_init(const _PyArgv *args)
-{
-    PyStatus status;
-    status = _PyRuntime_Initialize();
-    ……
-    PyPreConfig preconfig;
-    PyPreConfig_InitPythonConfig(&preconfig);
-    status = _Py_PreInitializeFromPyArgv(&preconfig, args);
-
-    PyConfig config;
-    status = PyConfig_InitPythonConfig(&config);
-    if (_PyStatus_EXCEPTION(status)) {
-        goto done;
-    }
-    ……
-    status = Py_InitializeFromConfig(&config);
-    if (_PyStatus_EXCEPTION(status)) {
-        goto done;
-    }
-    status = _PyStatus_OK();
-
-done:
-    PyConfig_Clear(&config);
-    return status;
-}
-```
-
-进行python运行环境的初始化，其作用包括启动基本进程和线程、系统module初始化，以及其他部分init工作。
-
-下面详细介绍初始化线程环境和系统module初始化这两个部分：
-
-#### 初始化线程环境
 在初始化线性环境之前，我们先介绍Python的运行模型，即线程模型。
 
 在虚拟器运行的任意时刻，Python运行的整体环境如下：
@@ -317,7 +242,7 @@ done:
 Python中，实现的这个虚拟机可以看作是对CPU的抽象，Python在的所有线程都在这个模拟CPU下完成工作。
 其中有两个关键的数据结构，其声明位于`Include/pystate.h`：
 
-- PyInterpreterState：对进程进行模拟；
+- PyInterpreterState：对解释器进行模拟；
 ```
 typedef struct _is {
     struct _is *next;
@@ -329,7 +254,7 @@ typedef struct _is {
     ……
 } PyInterpreterState;
 ```
-其中的`struct _ts *tstate_head;`模拟了进程环境中的线程集合。
+其中的`struct _ts *tstate_head;`模拟了解释器环境中的线程集合。
 - PyThreadState：对线程进行模拟。
 ```
 typedef struct _ts {
@@ -372,7 +297,7 @@ _PyRuntimeState_Init_impl(_PyRuntimeState *runtime)
 
 在上述操作完成之后，`Modules/main.c`的函数pymain_init继续执行。
 在执行语句`status = Py_InitializeFromConfig(&config)`时，完成关键的初始化操作，
-包括从config中读取配置信息、进程初始化、线程初始化，以及系统module初始化等操作。
+包括从config中读取配置信息、解释器初始化、线程初始化，以及系统module初始化等操作。
 ```
 PyStatus
 Py_InitializeFromConfig(const PyConfig *config)
@@ -445,33 +370,35 @@ pycore_create_interpreter(_PyRuntimeState *runtime,
 }
 ```
 
-函数pycore_create_interpreter中调用PyInterpreterState_New函数，
-创建一个新的PyInterpreterState对象，作为Python解释器的原始进程。该函数位于`Python/pystate.c`中：
+函数pycore_create_interpreter中调用PyInterpreterState_New函数。该函数的作用是初始化python的解释器。在此函数中，我们为解释器分配内存空间、初始化Interpreter相关参数，以及设置对应指针内容。该函数位于`Python/pystate.c`中：
+
 ```
 static PyInterpreterState *interp_head = NULL;
 
 PyInterpreterState* PyInterpreterState_New(void)
 {
-    PyInterpreterState *interp = malloc(sizeof(PyInterpreterState));
+    PyInterpreterState *interp = PyMem_RawMalloc(sizeof(PyInterpreterState));
+    memset(interp, 0, sizeof(*interp));
+    memset(interp, 0, sizeof(*interp));
     if (interp != NULL) {
-        HEAD_INIT();
-        interp->modules = NULL;
-        ……
-        HEAD_LOCK();
-        interp->next = interp_head;
-        interp_head = interp;
-        HEAD_UNLOCK();
+    	……
+        interp->id = interpreters->next_id;
+        interpreters->next_id += 1;
+        interp->next = interpreters->head;
+        if (interpreters->main == NULL) {
+            interpreters->main = interp;
+        }
+        interpreters->head = interp;
     }
     return interp;
 }
-
 ```
 
 在Python的运行时环境中，有一个全局的管理PyInterpreterState对象链表的指针：interp_head。Python
 虚拟机运行过程中，所有的PyInterpreterState对象通过next指针形成一个链表结构，其表头即为interp_head。
 
 
-在初始化进程对象之后，pycore_create_interpreter函数为该进程初始化一个线程对象，调用PyThreadState_New函数：
+在初始化解释器对象之后，pycore_create_interpreter函数为该解释器初始化一个线程对象，调用PyThreadState_New函数：
 ```
 PyThreadState* PyThreadState_New(PyInterpreterState *interp)
 {
@@ -493,18 +420,21 @@ PyThreadState* PyThreadState_New(PyInterpreterState *interp)
 }
 
 ```
-该函数的作用是为线程申请内存，创建PyThread- State对象，并对其中各个域进行初始化操作。
+该函数的作用是为一个Interpreter初始化一个线程对象，然后为线程申请内存，创建PyThreadState对象，并对其中各个域进行初始化操作。
+
 其中的
+
 - _PyThreadState_GetFrame设置用于获得线程中函数调用栈的操作
 - tstate->interp用于在PyThreadState对象中关联PyInterpreterState对象
 - tstate->next用于在PyInterpreterState对象中关联PyThreadState对象。
 
 此外，在PyThreadState结构体中，也存在一个next指针，用于维护PyThreadState对象列表，为Python实现多线程提供基础。
 
-将Python的进程对象与线程对象联系起来，这样就得到了虚拟机初始化后的进程与线程关系，如下图所示：
-![Python初始化进程环境](assets/python_Interpreter_and_Thread.png)
+将Python的解释器对象与线程对象联系起来，这样就得到了虚拟机初始化后的解释器与线程关系，如下图所示：
+![Python初始化解释器环境](assets/python_Interpreter_and_Thread.png)
+Interp_head是指向python解释器进程在指针，包括内容：next是下一个进程的指针，用于维护多进程，tstate_head维护解释器自身对应的线程，其中的next用于维护多线程，thread_id代表python.exe的线程id，以及一些系统内部对象及其方法，包括常用的list()、int()、sum()等，search_path和search_cache代码解释器运作时的路径信息，后面再详细解释，以及错误信息等内容。
 
-#### 系统module对象初始化
+### 系统module对象初始化
 系统的module是指在Python虚拟机创建之初，系统内部初始化的一部分对象，例如：dir对象、list对象，以及一系列sys对象。
 这些对象存在于Python虚拟机初始化时创建的一个名字空间，其创建的详细过程如下：
 
@@ -700,8 +630,8 @@ Python的module集合interp->modules是一个PyDictObject对象，用于维护(m
 在完成Python中基本的初始化工作之后，我们得到如下初始化环境：
 ![python_sys_module](assets/python_creating_env.png)
 
-#### 激活Python虚拟机
-完成上述的python进程线程初始化和module初始化之后，我们还需要对虚拟机进行激活，进入到字节码虚拟机之后，才完成真正的初始化工作。
+### 激活Python虚拟机
+完成上述的python解释器线程初始化和module初始化之后，我们还需要对虚拟机进行激活，进入到字节码虚拟机之后，才完成真正的初始化工作。
 
 在位于`Modules/main.c`的函数Py_Main的初始化工作pymain_init完成之后，进入函数Py_RunMain，然后调用函数pymain_run_python，
 根据输入的参数启动虚拟机：
@@ -843,9 +773,13 @@ _PyEval_EvalCodeWithName(PyObject *_co, PyObject *globals, PyObject *locals,
     return retval;
 }
 ```
-以上为以命令行形式启动python字节码虚拟机的过程，当输入参数为filename.py时，其执行过程也类似
-命令行启动，区别在于命令行是从解释器终端一行一行读取用户输入，而文件执行模式是读取用户
+以上为以命令行形式启动python字节码虚拟机的过程。
+
+当输入参数为filename.py时，其执行过程也类似命令行启动，区别在于命令行是从解释器终端一行一行读取用户输入，而文件执行模式是读取用户
 指定的filename.py中的内容，最终都进入到run_mode函数中，对输入内容进行执行。
+其执行的流程如下所示：
+![python run file](assets/runfile.png)
+在激活虚拟机的关键函数run_mod()中，先调用Python/compile.c中的PyAST_CompileObject()函数，完成了字节码的编译工作，创建了一个PyCodeObject对象，将其传入函数run_eval_code_obj中，激活执行Python字节码的虚拟机，开始代码的解释执行。
 
 至此，python的字节码虚拟机已经被创建且激活，之后便可以循环往复地执行python字节码，完成对python的解释执行工作。
 
@@ -1311,7 +1245,7 @@ pprint(lex('a + 1'))
 
 #### 将CST转化为AST 
 将CST转化为AST的核心代码位于`Python/ast.c`中，其中`PyAST_FromNode()`函数负责从CST到AST的转换。  
-在上面我们已经介绍了CPython解释器进程以`node * tree`的格式创建了一个CST。然后跳转到`Python/ast.c`中的`PyAST_FromNodeObject()`，你可以看到它接收`node * tree`，`文件名`，`compiler flags`和`PyArena`，此函数的返回类型是定义在文件`Include/Python-ast.h`的`mod_ty`类型。  
+在上面我们已经介绍了CPython解释器以`node * tree`的格式创建了一个CST。然后跳转到`Python/ast.c`中的`PyAST_FromNodeObject()`，你可以看到它接收`node * tree`，`文件名`，`compiler flags`和`PyArena`，此函数的返回类型是定义在文件`Include/Python-ast.h`的`mod_ty`类型。  
 AST类型都列在`Parser/Python.asdl`中,你将看到所有列出的模块类型，语句类型，表达式类型，运算符和结构。  
 `Include/Python-ast.h`中的参数和名称与`Parser/Python.asdl`中指定的参数和名称直接相关。在`Parser/Python.asdl`中我们可以看到下面代码  
 ```
@@ -1723,10 +1657,10 @@ typedef struct _frame {
 
 ​	TODO：稍微结合代码说明一下
 
-#### 运行环境（线程、进程）
+#### 运行环境（线程、解释器）
 
 ​	Python在执行时，可能会有多个线程存在。Python虚拟机是对CPU的模拟因此可以把他看做软CPU，Python中的所有线程都使用这个软CPU来完成计算工作。真实机器上的任务切换机制对应到Python中，就是使不同的线程轮流使用虚拟机的机制。
-​	CPU切换任务时需要保存线程运行环境。对于Python来说，在切换线程之前，同样需要保存关于当前线程的信息。线程状态信息的抽象是通过 `PyThreadState` 对象来实现的, 一个线程将拥有一个`PyThreadState`对象。 `PyThreadState`不是对线程的模拟, 而是对线程状态的抽象。 python的线程仍然使用操作系统的原生线程。对于进程的抽象, 由 `PyInterPreterState` 对象来实现。
+​	CPU切换任务时需要保存线程运行环境。对于Python来说，在切换线程之前，同样需要保存关于当前线程的信息。线程状态信息的抽象是通过 `PyThreadState` 对象来实现的, 一个线程将拥有一个`PyThreadState`对象。 `PyThreadState`不是对线程的模拟, 而是对线程状态的抽象。 python的线程仍然使用操作系统的原生线程。对于解释器的抽象, 由 `PyInterPreterState` 对象来实现。
 
 ​	通常情况下, python只有一个interpreter, 其中维护了一个或多个PyThreadState对象, 这些对象对应的线程轮流使用上面提到的软CPU。 为了实现线程同步, python通过一个全局解释器锁GIL。
 
@@ -1841,7 +1775,7 @@ struct _ts {
 struct _is {
 
     struct _is *next;
-    struct _ts *tstate_head; // 模拟进程环境中的线程集合
+    struct _ts *tstate_head; // 模拟解释器环境中的线程集合
 
     int64_t id;
     int64_t id_refcount;
@@ -1912,7 +1846,7 @@ struct _is {
 };
 ```
 
-​	进程, 线程, 栈帧关系大致如下:
+​	解释器, 线程, 栈帧关系大致如下:
 
 ![1588063672226](assets/1588063672226-1588063672523.png)
 
